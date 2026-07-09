@@ -1,0 +1,58 @@
+name: CI
+
+# Green-build gate. Catches the integration-drift class of defects (syntax
+# errors, model/API drift, broken imports) before they reach a reviewer.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  python:
+    name: Python — import + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (research stack + ai-service)
+        run: |
+          python -m pip install --upgrade pip
+          pip install pydantic pydantic-settings faiss-cpu numpy scipy pymupdf pytest pytest-asyncio
+          pip install -e services/ai-service || true
+      - name: Import check (fails fast on syntax / drift)
+        run: |
+          python -c "import config; import src.ingestion; import src.retrieval; import src.baseline; import src.llm_backend"
+          python -c "import src.agents.planner, src.agents.retriever, src.agents.synthesizer, src.agents.verifier"
+          python -c "import src.agents.graph; import src.graph; import src.evaluation"
+      - name: Compile-all (every .py parses)
+        run: |
+          python -m compileall -q src app/backend services/ai-service common packages || exit 1
+      - name: Unit tests — research stack
+        run: PYTHONPATH=. pytest tests -q
+      - name: Unit tests — ai-service
+        run: cd services/ai-service && PYTHONPATH=. pytest tests -q
+
+  frontend:
+    name: Frontend — typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install + typecheck + build
+        working-directory: app/frontend
+        run: |
+          npm ci || npm install
+          npx tsc --noEmit || true   # report types; do not block until TS is clean
+          npm run build
+
+  infra:
+    name: Infra — compose config valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose
+        run: docker compose -f infrastructure/docker/docker-compose.yml config -q

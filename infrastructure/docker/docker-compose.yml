@@ -1,0 +1,66 @@
+# Docker stack for the multi-agent-rag project.
+#
+# HONEST STATUS (see ../../MONOREPO.md "What runs today"):
+#   * What's built today is the `app/` prototype: a FastAPI backend on SQLite +
+#     an in-process cache, and a Vite/React frontend. It does NOT need Postgres
+#     or Redis, and the recommended way to run it locally is `run.bat` (Windows)
+#     or the two-process flow in `app/RUNNING.md`.
+#   * The containerised `apps/api` (Next-served) + `apps/web` production services
+#     described in MONOREPO.md are NOT yet implemented — there are no
+#     api.Dockerfile / web.Dockerfile and no apps/api / apps/web source. Those
+#     `build:` services were removed from this file so `docker compose up` does
+#     not fail on missing build contexts. They will return when those services
+#     exist; see the commented stub at the bottom.
+#
+# The one service that is genuinely useful via Compose today is Ollama, for the
+# fully-local LLM mode. Bring it up, then `ollama pull phi3:mini`.
+
+services:
+  # Local LLM backend for air-gapped / on-device mode (LLM_MODE=local).
+  # After `docker compose up -d ollama`, run: docker exec -it <id> ollama pull phi3:mini
+  ollama:
+    image: ollama/ollama:latest
+    ports: ["11434:11434"]
+    volumes: ["ollama:/root/.ollama"]
+
+volumes:
+  ollama: {}
+
+# ---------------------------------------------------------------------------
+# FUTURE (production SaaS monorepo) — intentionally commented out until the
+# referenced code and Dockerfiles exist. Uncomment incrementally as each piece
+# lands so this file never references a build context that isn't there.
+# ---------------------------------------------------------------------------
+#
+#  postgres:                       # only needed once apps/api uses Postgres+pgvector
+#    image: pgvector/pgvector:pg16 # (the current app/ prototype uses SQLite)
+#    environment:
+#      POSTGRES_USER: veritas
+#      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-veritas}
+#      POSTGRES_DB: veritas
+#    ports: ["5432:5432"]
+#    volumes: ["pgdata:/var/lib/postgresql/data"]
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U veritas"]
+#      interval: 5s
+#      timeout: 3s
+#      retries: 10
+#
+#  redis:
+#    image: redis:7-alpine
+#    ports: ["6379:6379"]
+#
+#  api:                            # needs infrastructure/docker/api.Dockerfile + apps/api/ code
+#    build: { context: ../.., dockerfile: infrastructure/docker/api.Dockerfile }
+#    env_file: ../../.env
+#    depends_on: [postgres, redis]
+#    ports: ["8000:8000"]
+#
+#  web:                            # needs infrastructure/docker/web.Dockerfile + apps/web/ code
+#    build: { context: ../.., dockerfile: infrastructure/docker/web.Dockerfile }
+#    environment: { NEXT_PUBLIC_API_BASE: http://localhost:8000 }
+#    depends_on: [api]
+#    ports: ["3000:3000"]
+#
+# volumes:
+#   pgdata: {}

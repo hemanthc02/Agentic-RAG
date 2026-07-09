@@ -1,0 +1,40 @@
+# --- Secrets & config ---
+.env
+
+# --- User data: PDFs and built indexes must never be committed (prompt.md §2) ---
+data/pdfs/*
+!data/pdfs/.gitkeep
+data/index/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Frontend (Node / Vite) ---
+app/frontend/node_modules/
+app/frontend/dist/
+app/frontend/.env
+
+# --- Tooling caches ---
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# --- Reports: keep tracked outputs, ignore scratch figures/CSVs if desired ---
+# (uncomment to ignore generated eval CSVs)
+# reports/*.csv
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
