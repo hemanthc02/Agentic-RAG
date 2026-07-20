@@ -1,108 +1,171 @@
-# Multi-Agent RAG with Verified Citations
+# VeritasRAG — Retrieval-Augmented Generation with Verified Citations
 
-A research-paper Q&A assistant with a **verified-citation guarantee** that runs on a
-normal CPU laptop. It answers academic questions from a local PDF corpus and
-verifies its own citations with a Natural Language Inference (NLI) entailment model.
+A research-paper Q&A assistant with a **verified-citation guarantee**. You upload
+your PDFs, ask questions, and it answers **only** from those documents — then an
+independent verifier checks that every citation is actually supported by its
+source, showing you a faithfulness score and per-claim green/red cards.
 
-The full design, constraints, and 4-week plan live in [`prompt.md`](./prompt.md) —
-**read that first** before changing any code.
+Runs on a normal laptop. Two modes: **online** (fast, cloud model) and **offline**
+(fully on-device, private).
+
+---
+
+## Quick start (one file)
+
+```
+Double-click:  START.bat
+```
+
+- **First run** auto-creates the environment, installs everything, downloads the
+  AI models, and starts the app (~10–20 min, needs internet once).
+- **Every run after** just starts the app at **http://localhost:8000**.
+
+For **online** mode, put your own Anthropic key in `.env`:
+`ANTHROPIC_API_KEY=sk-ant-…` (get one at console.anthropic.com).
+**Offline** mode needs [Ollama](https://ollama.com) + `ollama pull phi4-mini` and
+no key. See `../documentation/` for full guides.
+
+---
 
 ## Why this exists
 
-Existing multi-agent RAG systems lack a dedicated citation verifier. Wallat et al.
-(2024) found up to **57%** of RAG citations are unfaithful — they look correct but
-aren't actually entailed by the cited evidence. The novelty here is treating
-**citation verification as a first-class agent** with NLI-based entailment scoring.
+Standard RAG can attach a citation to a sentence its cited source does not actually
+support. Wallat et al. (2024) report up to **57%** of RAG citations are unfaithful.
+VeritasRAG treats **citation verification as a first-class agent**: it measures each
+citation's faithfulness with a Natural Language Inference (NLI) entailment model and
+enforces it — and is honest when it cannot verify a claim.
 
 ## Architecture
 
-Four agents orchestrated by LangGraph:
+Four agents orchestrated as a state graph, preceded by a guard that answers
+small-talk / off-topic questions instantly instead of hallucinating:
 
 ```
-Question → Planner → Retriever → Synthesizer → Verifier → Answer
-                                       ▲            │
-                                       └─ retry ◄───┘  (low faithfulness, max 2)
+Question → Guard → Planner → Retriever(CRAG) → Synthesizer → Verifier → Answer
+                                                     ▲            │
+                                                     └─ revise ◄───┘  (unsupported claim; offline max 1, online max 2)
 ```
 
-The LLM is the only swappable, potentially-remote component. Everything else —
-embeddings, FAISS, the NLI verifier — runs locally in both modes.
+The answer-writing model is the only swappable, potentially-remote component.
+Everything else — embeddings, the FAISS index, and the NLI verifier — runs
+**locally in both modes**.
 
 ## Two modes
 
-| Mode | Backend | Model | Notes |
-|------|---------|-------|-------|
-| `groq` (default) | Groq API | Llama 3.3 70B | Fast + high quality; sends question + retrieved chunks over HTTPS |
-| `ollama` (local) | Ollama @ localhost | Phi-3-mini | Fully on-device; slower, slightly lower quality |
+| Mode | Writer model | Notes |
+|------|--------------|-------|
+| **Online** (default) | Anthropic Claude (`claude-sonnet-5`) | Fast, high quality; sends the question + retrieved excerpts over HTTPS |
+| **Offline** | Ollama `phi4-mini` (on-device) | Fully private, nothing leaves the machine; slower (CPU); auto-optimised (fewer chunks/tokens, ≤1 revision) |
 
-## Privacy (read carefully — claims are mode-specific)
+## Privacy (mode-specific — state the mode)
 
 - **Your PDFs never leave the device** in either mode.
-- **`groq` mode:** your question and the retrieved chunks (excerpts of your PDFs)
-  are sent to Groq's API over HTTPS. This mode is **not** suitable for air-gapped
-  or strict data-residency workflows.
-- **`ollama` mode:** nothing leaves the device — the LLM runs locally.
+- **Online:** your question and the retrieved chunk excerpts go to the cloud model over HTTPS.
+- **Offline:** nothing leaves the device.
 - The **retriever and verifier are local in both modes.**
 
-Never describe this system as "fully local" or claim "data never leaves the device"
-without naming the mode it applies to.
+## Features
 
-## Setup
+- **Ask** — verified RAG Q&A with a **"Retrieved from" sources list** (each `[n]`
+  citation mapped to its PDF + page) and per-claim green/red verification cards.
+- **PDF libraries** — create multiple projects; upload PDFs (files or a folder);
+  **delete** individual PDFs (index rebuilds automatically).
+- **Research guide** — a corpus-grounded mentor for gap analysis and methodology
+  comparison, with an explicit **project selector**.
+- **Viva** — dynamically generated exam questions from your papers + scored answers.
+- **Papers** — search arXiv / Semantic Scholar and import open-access PDFs (online).
+- **Agents** — a visual map of the pipeline: each agent's input, process, output,
+  and the three layers it works across.
+- **Settings** — shows the models in use; no API keys are entered in the app.
+
+## Project layout
+
+```
+multi-agent-rag/
+├── START.bat            # single launcher (setup on first run, then start)
+├── config.py            # single source of truth: paths, model names, thresholds
+├── requirements.txt     # exact pinned dependencies
+├── .env / .env.example  # secrets & settings (JWT, ANTHROPIC_API_KEY, OLLAMA_MODEL)
+├── bootstrap_env.py     # creates .env with a secure JWT secret on first setup
+├── src/
+│   ├── agents/          # planner, retriever, synthesizer, verifier, graph, viva, guide
+│   ├── ingestion.py     # PDF → chunks
+│   ├── retrieval.py     # embeddings + FAISS + shared-model caching
+│   ├── llm_backend.py   # online (Claude) / offline (Ollama) abstraction
+│   ├── evaluation.py    # faithfulness benchmark + paired t-test
+│   └── paper_search/    # arXiv + Semantic Scholar
+├── app/
+│   ├── backend/         # FastAPI, 7 routers, JWT+bcrypt auth, SQLite, guardrails
+│   └── frontend/        # React + Vite + Tailwind SPA (pre-built into dist/)
+├── tests/               # 34 pytest tests
+└── data/                # app.db, pdfs/, corpora/ (created at runtime)
+```
+
+## Manual run (alternative to START.bat)
 
 ```bash
 python -m venv .venv
-# Windows: .venv\Scripts\activate   |   Unix: source .venv/bin/activate
-
-# Install CPU torch first, then the rest:
+.venv\Scripts\activate                 # Windows
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
-
-cp .env.example .env        # then add your GROQ_API_KEY
+python bootstrap_env.py                 # writes .env with a secure JWT secret
+# add ANTHROPIC_API_KEY to .env for online mode
+python -m uvicorn app.backend.main:app --host 127.0.0.1 --port 8000
 ```
 
-Drop 30–50 arXiv PDFs into `data/pdfs/` (gitignored).
+Then open http://localhost:8000. Login is created via the sign-up page.
 
-## Usage (filled in as weeks ship)
+## Command-line tools (optional)
 
 ```bash
-# Week 1 — vanilla baseline
-python -m src.baseline "What is Self-RAG?"
-python -m src.evaluation --pipeline baseline
-
-# Week 2+ — full multi-agent pipeline
-python -m src.graph "What is the difference between Self-RAG and CRAG?"
-
-# Week 4 — UI
-streamlit run app/streamlit_app.py
+python -m src.graph "What is corrective RAG?" --corpus <corpus_id>   # run the pipeline
+python -m src.evaluation --compare                                    # baseline vs multi-agent + t-test
+python -m pytest tests -q                                             # run the 34 tests
 ```
 
-## Hard constraints
+## Deployment
 
-CPU only, < 11 GB active RAM, no fine-tuning, no paid APIs (Groq free tier only),
-free/open-source deps, no real PDFs or keys in git. See `prompt.md` §2 and §8.
+VeritasRAG is a **single FastAPI service** that serves both the JSON API and the
+pre-built React SPA on one port — so deploying it means deploying one Python web
+app. There is **no Streamlit** and no separate web server; the frontend is
+compiled to static files (`app/frontend/dist/`) that the backend serves directly.
 
-## Layout
+**What must be true on the server**
+- Python 3.10–3.13.
+- The frontend built once (`cd app/frontend && npm install && npm run build`). The
+  built `dist/` is already included in the distributed package, so the server does
+  **not** need Node.js.
+- Environment variables (never committed):
+  - `APP_ENV=production`
+  - `JWT_SECRET` — a random 256-bit secret (the app **refuses to start** in
+    production with a placeholder secret).
+  - `ANTHROPIC_API_KEY` — for online mode.
+  - `OLLAMA_HOST` — only if offline mode is used (an Ollama daemon with
+    `phi4-mini` must be reachable).
+- Persistent storage for `data/` (SQLite database, uploaded PDFs, FAISS indexes).
 
-See `prompt.md` §4 for the full tree. Tunables live in `config.py` (the only place
-for paths, model names, and thresholds). Prompt templates live in `src/prompts/`.
+**Run it (production-style)**
+```bash
+python -m uvicorn app.backend.main:app --host 0.0.0.0 --port 8000
+```
+Put a reverse proxy (nginx / Caddy) in front for TLS and to serve on 80/443.
 
-## Status
+**Honest scaling notes (address before multi-user production)**
+- Runs as a **single process today**: the SQLite database, the response cache, and
+  the per-corpus FAISS indexes are process-local. Horizontal scaling (multiple
+  workers/replicas) would first need a shared database (e.g. PostgreSQL), a shared
+  cache (e.g. Redis), shared index storage, and per-corpus write locks.
+- A **Dockerfile for the app, cloud hosting, CI/CD to a cluster, and
+  monitoring/experiment tracking are planned but NOT yet implemented** — they are
+  future work, not current capabilities.
+- Online mode needs outbound HTTPS to the model provider; offline mode keeps
+  everything on the host.
 
-The full research pipeline is implemented and tested:
+## Constraints & honesty
 
-- **Ingestion / retrieval / baseline** — `src/ingestion.py`, `src/retrieval.py`,
-  `src/baseline.py`.
-- **Multi-agent pipeline** — `src/agents/` (Planner→Retriever→Synthesizer→
-  Verifier with the NLI citation verifier and a bounded revise loop). Run it
-  with `python -m src.graph "..." --corpus default`.
-- **Evaluation harness** — `src/evaluation.py`: per-claim NLI faithfulness,
-  baseline-vs-multiagent comparison, and a paired t-test
-  (`python -m src.evaluation --compare`).
-- **App** — a FastAPI + React/TS prototype under `app/` whose authenticated
-  `/api/query` runs the real pipeline (see `app/RUNNING.md`).
-
-To run anything end-to-end you must first drop arXiv PDFs into `data/pdfs/` and
-build an index: `python -m src.retrieval --build --corpus default`.
-
-For the honest scope of the larger "production monorepo" (most of `apps/`,
-`services/rag-service`, `infrastructure/k8s`, etc. are still scaffolding), see
-[`MONOREPO.md`](./MONOREPO.md) → "What runs today".
+CPU-only friendly; no model training (pre-trained models are composed, not
+trained); the offline model is `phi4-mini` (3.8B) because full models don't fit in
+~7 GB RAM. The published faithfulness figures (0.821 vs 0.643 baseline) come from an
+earlier run and a re-run with the current verifier is recommended before citing
+them. Deployment is a single local server; containerisation / cloud hosting are
+future work. The knowledge-graph feature was removed as it was not reliable.

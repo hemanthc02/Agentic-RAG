@@ -1,5 +1,10 @@
 # Running the app (frontend + backend)
 
+> **Just want to run it?** Double-click **`START.bat`** in the project root — it
+> installs everything on first run and serves the pre-built UI at
+> **http://localhost:8000**. The two-process flow below is for **frontend
+> development** only (live-reload while editing React code).
+
 The app runs **on your machine** — there is no hosted/public URL. You start two
 local processes and open the frontend in your browser.
 
@@ -52,8 +57,9 @@ npm run dev
 
 Open **http://localhost:5173**. Register/log in, create a corpus, upload a few
 arXiv PDFs, then ask a question (try "What is Self-RAG?" or "What problem does
-CRAG address?") and pick Groq (cloud) or Ollama (local). Claims are color-coded
-green / amber / red by their NLI faithfulness score.
+CRAG address?") and pick **Online** (Claude, cloud) or **Offline** (phi4-mini via
+Ollama, on-device). Answers show a "Retrieved from" source list and per-claim
+cards color-coded green / amber / red by their NLI faithfulness score.
 
 ## Endpoints (all `/api/*`; query/corpora/documents require a JWT)
 
