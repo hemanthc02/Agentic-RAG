@@ -77,6 +77,12 @@ def get_shared_embedder() -> SentenceTransformerEmbedder:
         return _shared_embedder
 
 
+def drop_cached_store(corpus_id: str) -> None:
+    """Evict a corpus's cached vector store (after delete/rebuild) so the next
+    load reads fresh from disk instead of serving a stale in-memory copy."""
+    _store_cache.pop(corpus_id, None)
+
+
 def load_vector_store(corpus_id: str = config.DEFAULT_CORPUS_ID) -> "VectorStore | None":
     """Load a corpus's vector store, reusing a cached copy while the index
     file on disk is unchanged. Returns None if the corpus has no index yet."""

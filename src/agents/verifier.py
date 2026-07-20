@@ -136,15 +136,25 @@ def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in sents if s.strip()]
 
 
-def verify_answer(answer: str, chunks: list[dict]) -> dict:
+def verify_answer(answer: str, chunks: list[dict],
+                  correct_citations: bool = False) -> dict:
     """Score an answer's per-claim citation faithfulness against its chunks.
 
     This is the project's core metric, factored out of :func:`verifier_node` so
     that BOTH the agentic pipeline and the evaluation harness (``src.evaluation``)
     score the baseline and multi-agent answers with the *same* NLI measure.
 
+    ``correct_citations`` (pipeline path only — NOT the evaluation metric):
+    LLMs frequently state a fact that IS in the retrieved set but attach the
+    wrong [n] index. When a cited chunk fails, the claim is re-scored against
+    the other retrieved chunks; if one entails it above the threshold, the
+    citation is remapped to that chunk (recorded via ``corrected_citation``)
+    and the marker is rewritten in the answer text. The claim is still
+    NLI-verified against real corpus text — only the pointer is repaired.
+
     Returns a dict with:
         claims               — per-sentence records (see below)
+        answer               — the (possibly citation-corrected) answer text
         overall_faithfulness — mean NLI entailment over CITED claims (0.0 if none)
         cited_claims         — number of sentences carrying ≥1 valid citation
         uncited_claims       — number of sentences with no citation
@@ -153,6 +163,7 @@ def verify_answer(answer: str, chunks: list[dict]) -> dict:
     """
     sentences = _split_sentences(answer)
     claims: list[dict] = []
+    corrected_answer = answer
 
     for sent in sentences:
         refs = _extract_citation_refs(sent)
@@ -174,16 +185,43 @@ def verify_answer(answer: str, chunks: list[dict]) -> dict:
                 "verdict": None,
             })
         else:
-            # Mean NLI entailment across the cited chunks (§9).
+            # A claim is supported if AT LEAST ONE cited chunk entails it
+            # (max, not mean: citing a second, weaker source alongside a
+            # perfect one shouldn't fail the claim).
             scores = [_nli_score(c["text"], sent) for c in cited_chunks]
-            avg_score = sum(scores) / len(scores)
+            avg_score = max(scores)
+            corrected_to: int | None = None
+
+            if (correct_citations
+                    and avg_score < config.CITATION_FAITHFULNESS_THRESHOLD
+                    and len(refs) == 1):
+                # Citation repair: is the claim entailed by a DIFFERENT
+                # retrieved chunk? (single-citation sentences only, so the
+                # marker rewrite below is unambiguous)
+                cited_ids = {c["chunk_id"] for c in cited_chunks}
+                best_idx, best_score = None, avg_score
+                for idx, c in enumerate(chunks, 1):
+                    if c["chunk_id"] in cited_ids:
+                        continue
+                    s = _nli_score(c["text"], sent)
+                    if s > best_score:
+                        best_idx, best_score = idx, s
+                if best_idx is not None and best_score >= config.CITATION_FAITHFULNESS_THRESHOLD:
+                    corrected_to = best_idx
+                    fixed_sent = sent.replace(f"[{refs[0]}]", f"[{best_idx}]")
+                    corrected_answer = corrected_answer.replace(sent, fixed_sent, 1)
+                    cited_chunks = [chunks[best_idx - 1]]
+                    avg_score = best_score
+
             claims.append({
-                "claim_text": sent,
+                "claim_text": sent if corrected_to is None else
+                sent.replace(f"[{refs[0]}]", f"[{corrected_to}]"),
                 "cited_chunk_ids": [c["chunk_id"] for c in cited_chunks],
                 "cited_chunks": cited_chunks,
                 "faithfulness_score": round(avg_score, 3),
                 "cited": True,
                 "verdict": avg_score >= config.CITATION_FAITHFULNESS_THRESHOLD,
+                "corrected_citation": corrected_to,
             })
 
     cited_claims = [c for c in claims if c["cited"]]
@@ -194,13 +232,27 @@ def verify_answer(answer: str, chunks: list[dict]) -> dict:
         if cited_claims
         else 0.0
     )
+    total_claims = len(claims)
+    cited_ratio = (len(cited_claims) / total_claims) if total_claims else 0.0
+    # "Verified" requires (a) at least one cited claim, (b) every cited claim
+    # passes NLI, AND (c) the answer is not dominated by uncited sentences.
+    # (c) closes the gaming hole where an answer of many uncited sentences plus
+    # one passing cited sentence would otherwise report verified=True.
+    all_cited_pass = (
+        bool(cited_claims)
+        and all(c["verdict"] for c in cited_claims)
+        and cited_ratio >= config.MIN_CITED_RATIO
+    )
     return {
         "claims": claims,
+        "answer": corrected_answer,
         "overall_faithfulness": overall,
         "cited_claims": len(cited_claims),
-        "uncited_claims": len(claims) - len(cited_claims),
+        "uncited_claims": total_claims - len(cited_claims),
+        "cited_ratio": round(cited_ratio, 3),
         "failed_claims": sum(1 for c in cited_claims if not c["verdict"]),
-        "all_cited_pass": bool(cited_claims) and all(c["verdict"] for c in cited_claims),
+        "all_cited_pass": all_cited_pass,
+        "corrected_citations": sum(1 for c in claims if c.get("corrected_citation")),
     }
 
 
@@ -217,12 +269,16 @@ def verifier_node(state: AgentState) -> dict:
         return {"claims": [], "overall_faithfulness": 0.0, "verified": True,
                 "revision_count": revision, "stage_log": log}
 
-    result = verify_answer(answer, chunks)
+    result = verify_answer(answer, chunks, correct_citations=True)
     claims = result["claims"]
     overall = result["overall_faithfulness"]
     uncited_count = result["uncited_claims"]
     answer_ok = result["all_cited_pass"]
-    can_revise = revision < config.MAX_VERIFIER_RETRIES
+    # Offline: fewer rewrites (each rewrite is a slow CPU generation).
+    max_retries = (config.OFFLINE_MAX_REVISIONS
+                   if str(state.get("mode", "")).lower() == "local"
+                   else config.MAX_VERIFIER_RETRIES)
+    can_revise = revision < max_retries
 
     elapsed = int((time.perf_counter() - t0) * 1000)
     log = state.get("stage_log", [])
@@ -231,13 +287,16 @@ def verifier_node(state: AgentState) -> dict:
         "claims": len(claims),
         "cited_claims": result["cited_claims"],
         "uncited_claims": uncited_count,
+        "cited_ratio": result["cited_ratio"],
         "failed": result["failed_claims"],
+        "corrected_citations": result["corrected_citations"],
         "overall_faithfulness": overall,
         "will_revise": not answer_ok and can_revise,
         "latency_ms": elapsed,
     })
 
     return {
+        "answer": result["answer"],  # citation markers may have been repaired
         # ``verified`` reflects the TRUE verification outcome. We do NOT flip it
         # to True just because the retry budget ran out — exhausting retries on
         # an unfaithful answer means it stays unverified, and the consumer is
@@ -259,6 +318,9 @@ def should_revise(state: AgentState) -> str:
     """
     if state.get("verified", False):
         return "done"
-    if state.get("revision_count", 0) >= config.MAX_VERIFIER_RETRIES:
+    max_retries = (config.OFFLINE_MAX_REVISIONS
+                   if str(state.get("mode", "")).lower() == "local"
+                   else config.MAX_VERIFIER_RETRIES)
+    if state.get("revision_count", 0) >= max_retries:
         return "done"
     return "revise"

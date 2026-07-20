@@ -66,6 +66,23 @@ export default function AskPage() {
     }
   }
 
+  async function deleteDoc(docId: string, name: string) {
+    if (!activeCorpusId) return;
+    if (!window.confirm(`Remove "${name}" from this library?\n\nThis deletes the PDF and rebuilds the search index so it is no longer used in answers.`))
+      return;
+    try {
+      await corpusApi.deleteDoc(activeCorpusId, docId);
+      corpusApi.listDocs(activeCorpusId).then((r) => setDocuments(r.data)).catch(() => {});
+      corpusApi.list().then((r) => setCorpora(r.data)).catch(() => {});
+      toast.success("PDF removed from the library");
+    } catch (err: any) {
+      toast.error(
+        err?.response?.data?.detail ??
+          (err?.response ? "Couldn't remove the PDF" : "Can't reach the server — is it still running?"),
+      );
+    }
+  }
+
   async function sendQuery(e: React.FormEvent) {
     e.preventDefault();
     if (!question.trim()) return;
@@ -170,11 +187,19 @@ export default function AskPage() {
                 }}
               />
               {documents.length > 0 && (
-                <ul className="mt-3 space-y-1">
+                <ul className="mt-3 space-y-0.5">
                   {documents.map((d) => (
-                    <li key={d.id} className="text-xs text-zinc-600 truncate flex items-center gap-1.5">
+                    <li key={d.id} className="group text-xs text-zinc-600 flex items-center gap-1.5 rounded-md px-1 py-1 hover:bg-zinc-50">
                       <FileText className="w-3 h-3 text-brand-500 flex-shrink-0" strokeWidth={2} />
-                      {d.original_name}
+                      <span className="truncate flex-1">{d.original_name}</span>
+                      <button
+                        onClick={() => deleteDoc(d.id, d.original_name)}
+                        className="flex-shrink-0 text-zinc-300 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Remove this PDF from the library"
+                        aria-label={`Remove ${d.original_name}`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" strokeWidth={2} />
+                      </button>
                     </li>
                   ))}
                 </ul>

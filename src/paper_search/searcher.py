@@ -14,7 +14,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 SEMANTIC_SCHOLAR_API = "https://api.semanticscholar.org/graph/v1"
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"  # https — http now 301-redirects
 
 _HEADERS = {
     "User-Agent": "ResearchRAG/1.0 (academic research tool; contact: research@example.com)"
@@ -22,15 +22,22 @@ _HEADERS = {
 
 
 async def search_semantic_scholar(query: str, limit: int = 10) -> list[dict]:
-    """Search Semantic Scholar. Returns list of paper dicts."""
+    """Search Semantic Scholar. Returns list of paper dicts. Retries once on the
+    common 429 rate-limit (the free endpoint is aggressively throttled)."""
+    import asyncio
+
     params = {
         "query": query,
         "limit": min(limit, 10),
         "fields": "title,authors,year,abstract,externalIds,openAccessPdf,citationCount,venue",
     }
     try:
-        async with httpx.AsyncClient(timeout=10.0, headers=_HEADERS) as client:
+        async with httpx.AsyncClient(timeout=12.0, headers=_HEADERS,
+                                     follow_redirects=True) as client:
             r = await client.get(f"{SEMANTIC_SCHOLAR_API}/paper/search", params=params)
+            if r.status_code == 429:
+                await asyncio.sleep(2.0)
+                r = await client.get(f"{SEMANTIC_SCHOLAR_API}/paper/search", params=params)
             r.raise_for_status()
             data = r.json()
             papers = []
@@ -65,7 +72,8 @@ async def search_arxiv(query: str, limit: int = 10) -> list[dict]:
         "sortOrder": "descending",
     }
     try:
-        async with httpx.AsyncClient(timeout=10.0, headers=_HEADERS) as client:
+        async with httpx.AsyncClient(timeout=12.0, headers=_HEADERS,
+                                     follow_redirects=True) as client:
             r = await client.get(ARXIV_API, params=params)
             r.raise_for_status()
             # Parse Atom XML
@@ -139,19 +147,26 @@ async def search_papers(query: str, limit: int = 10,
     if expand_query and llm_backend:
         try:
             expansion = llm_backend.generate(
-                f"Convert this research idea into 5 specific academic search keywords "
-                f"for finding related papers. Return only the keywords separated by spaces, "
-                f"no explanation:\n\n{query}",
+                f"Convert this research idea into 3-6 academic search keywords for "
+                f"finding related papers. Return ONLY the keywords on one line, "
+                f"space-separated, no punctuation, no explanation:\n\n{query}",
                 temperature=0.0,
-                max_tokens=80,
+                max_tokens=60,
             )
-            search_query = expansion.strip()
-            logger.info("Expanded query: '%s' -> '%s'", query, search_query)
+            cleaned = _clean_keywords(expansion)
+            if cleaned:
+                search_query = cleaned
+                logger.info("Expanded query: '%s' -> '%s'", query, search_query)
         except Exception:
             pass  # Fall back to original query
 
     per_source = max(limit, 8)
     ss_results, arxiv_results = await _parallel_search(search_query, per_source)
+
+    # If the expanded query found nothing, retry once with the raw user query.
+    if not ss_results and not arxiv_results and search_query != query:
+        logger.info("Expanded query returned 0 results; retrying with raw query.")
+        ss_results, arxiv_results = await _parallel_search(query, per_source)
 
     # Merge and deduplicate by title similarity
     all_papers = ss_results + arxiv_results
@@ -188,3 +203,13 @@ async def _parallel_search(query: str, limit: int) -> tuple[list[dict], list[dic
 def _normalize_title(title: str) -> str:
     import re
     return re.sub(r"\W+", " ", title.lower()).strip()
+
+
+def _clean_keywords(text: str) -> str:
+    """Reduce an LLM expansion to a safe space-separated keyword string:
+    first non-empty line, punctuation stripped, capped to ~8 words."""
+    import re
+    line = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    line = re.sub(r"[^\w\s-]", " ", line)          # drop punctuation/quotes
+    words = [w for w in line.split() if len(w) > 1]
+    return " ".join(words[:8]).strip()

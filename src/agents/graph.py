@@ -21,10 +21,65 @@
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
+import config
+
 _pipeline: Any = None
+
+# ── Pipeline guards ──────────────────────────────────────────────────────────
+# Small-talk / identity questions must never reach the RAG pipeline: retrieval
+# returns irrelevant chunks and small local models then hallucinate freely
+# (at multi-minute cost on CPU). Answer them instantly instead.
+_SMALLTALK_RE = re.compile(
+    r"^\s*(hi+|hello+|hey+|yo|hai|howdy|good\s+(morning|afternoon|evening)"
+    r"|thanks?|thank\s+you|ok(ay)?|bye|goodbye)[\s!.,?]*$"
+    r"|who\s+(are|r)\s+(you|u)\b"
+    r"|what(?:'s|\s+is)\s+(?:your|ur)\s+name"
+    r"|what\s+can\s+(you|u)\s+do"
+    r"|how\s+are\s+(you|u)\b",
+    re.IGNORECASE,
+)
+
+_SMALLTALK_ANSWER = (
+    "I'm VeritasRAG — a research assistant that answers questions strictly from "
+    "the PDFs in your library and verifies every citation against them. "
+    "Ask me something about your uploaded papers, e.g. "
+    "\"What are the limitations of standard RAG systems?\""
+)
+
+_OFFTOPIC_ANSWER = (
+    "I couldn't find anything in your PDF library related to that question, "
+    "so I won't guess. Try rephrasing it, or ask about a topic your uploaded "
+    "papers actually cover."
+)
+
+
+def _pipeline_shortcut(question: str, corpus_id: str) -> tuple[str, str] | None:
+    """Return ``(reason, answer)`` if the question should bypass the pipeline.
+
+    Two cases: small-talk/identity questions, and questions whose best
+    retrieval score is below ``config.OFFTOPIC_SCORE_FLOOR`` (nothing in the
+    corpus is even loosely related — synthesis would only hallucinate).
+    """
+    q = question.strip()
+    if len(q.split()) <= 8 and _SMALLTALK_RE.search(q):
+        return "smalltalk", _SMALLTALK_ANSWER
+
+    try:
+        from src.retrieval import load_vector_store
+
+        vs = load_vector_store(corpus_id)
+        if vs is not None:
+            hits = vs.search(q, k=3)
+            best = max((h.score for h in hits), default=0.0)
+            if best < config.OFFTOPIC_SCORE_FLOOR:
+                return "off_topic", _OFFTOPIC_ANSWER
+    except Exception:
+        pass  # never let the guard break the pipeline itself
+    return None
 
 
 def get_pipeline() -> Any:
@@ -76,6 +131,9 @@ def run(
 ) -> dict[str, Any]:
     """Run the full agentic RAG pipeline and return the final state."""
     t0 = time.perf_counter()
+    # Offline speed: fewer chunks -> shorter prompt -> faster CPU generation.
+    if (mode or "").lower() == "local":
+        top_k = min(top_k, config.OFFLINE_TOP_K)
     initial: AgentState = {
         "question": question,
         "corpus_id": corpus_id,
@@ -94,6 +152,19 @@ def run(
         "stage_log": [],
         "error": None,
     }
+
+    shortcut = _pipeline_shortcut(question, corpus_id)
+    if shortcut is not None:
+        reason, answer = shortcut
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        return {
+            **initial,
+            "answer": answer,
+            "verified": True,
+            "overall_faithfulness": 1.0,
+            "latency_ms": elapsed,
+            "stage_log": [{"stage": "guard", "reason": reason, "latency_ms": elapsed}],
+        }
 
     try:
         final = get_pipeline().invoke(initial)

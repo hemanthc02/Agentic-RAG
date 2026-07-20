@@ -97,19 +97,31 @@ def gap_analysis(
 
 # ── Knowledge Graph ───────────────────────────────────────────────────────────
 
+# In-memory build status per corpus so the UI can poll and watch it grow.
+_KG_STATUS: dict[str, str] = {}
+
+
 @router.post("/knowledge-graph/build")
 def build_kg(
     user: Annotated[dict, Depends(auth.get_current_user)],
     corpus_id: str = Query(...),
     mode: str = Query("cloud"),
     provider: str = Query("groq"),
-    max_chunks: int = Query(50),
+    max_chunks: int = Query(40, ge=1, le=200),
 ):
-    """Build or rebuild the knowledge graph for a corpus."""
+    """Kick off a background knowledge-graph build and return immediately.
+
+    Nodes/edges are written to the DB incrementally, so the client polls
+    GET /knowledge-graph/{corpus_id} and watches the graph grow live.
+    """
     corpus = db.get_corpus(corpus_id, user["id"])
     if not corpus:
         raise HTTPException(404, "Corpus not found")
 
+    if _KG_STATUS.get(corpus_id) == "building":
+        return {"status": "building", "message": "A build is already in progress."}
+
+    import threading
     from src.retrieval import load_vector_store
     from src.knowledge_graph.builder import build_knowledge_graph
     from src.llm_backend import get_backend
@@ -122,8 +134,19 @@ def build_kg(
         for c in vs.chunks
     ]
     llm = get_backend(mode, provider)
-    result = build_knowledge_graph(corpus_id, chunks, llm, max_chunks=max_chunks)
-    return result
+    _KG_STATUS[corpus_id] = "building"
+
+    def _run():
+        try:
+            build_knowledge_graph(corpus_id, chunks, llm, max_chunks=max_chunks)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).warning("KG build failed: %s", exc)
+        finally:
+            _KG_STATUS[corpus_id] = "done"
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"status": "building", "message": "Knowledge graph is building in the background."}
 
 
 @router.get("/knowledge-graph/{corpus_id}")
@@ -131,14 +154,18 @@ def get_kg(
     corpus_id: str,
     user: Annotated[dict, Depends(auth.get_current_user)],
 ):
-    """Get knowledge graph nodes and edges for a corpus."""
+    """Get knowledge graph nodes and edges for a corpus, plus build status."""
     corpus = db.get_corpus(corpus_id, user["id"])
     if not corpus:
         raise HTTPException(404, "Corpus not found")
 
     nodes = db.get_kg_nodes(corpus_id)
     edges = db.get_kg_edges(corpus_id)
-    return {"nodes": nodes, "edges": edges, "node_count": len(nodes), "edge_count": len(edges)}
+    return {
+        "nodes": nodes, "edges": edges,
+        "node_count": len(nodes), "edge_count": len(edges),
+        "building": _KG_STATUS.get(corpus_id) == "building",
+    }
 
 
 # ── Viva Agent ────────────────────────────────────────────────────────────────

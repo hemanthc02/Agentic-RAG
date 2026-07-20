@@ -1,12 +1,56 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { ChevronDown, ChevronUp, User, Sparkles, Zap } from "lucide-react";
+import { ChevronDown, ChevronUp, User, Sparkles, Zap, BookOpen, FileText } from "lucide-react";
 import type { ChatMessage as ChatMessageType, Claim, CitedChunk } from "../types";
 
 function scoreBand(score: number) {
   if (score >= 0.8) return "score-green";
   if (score >= 0.6) return "score-amber";
   return "score-red";
+}
+
+// Strip the storage UUID prefix and any folder path so the reader sees a
+// clean, recognisable PDF name.
+function cleanSource(src: string) {
+  const base = src.split(/[\\/]/).pop() || src;
+  return base.replace(/^[0-9a-fA-F]{16,32}_/, "");
+}
+
+// "Retrieved from …" — shows exactly which PDF and page each citation [n]
+// came from, so the answer is traceable to its sources at a glance.
+function SourcesSection({ sources }: { sources: CitedChunk[] }) {
+  const [open, setOpen] = useState(false);
+  const uniqueFiles = Array.from(new Set(sources.map((s) => cleanSource(s.source))));
+  return (
+    <div className="w-full">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs text-zinc-500 hover:text-zinc-900 flex items-center gap-1 self-start transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 rounded"
+      >
+        {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        <BookOpen className="w-3.5 h-3.5 text-brand-500" strokeWidth={2} />
+        Retrieved from {uniqueFiles.length} source{uniqueFiles.length > 1 ? "s" : ""}
+      </button>
+      {!open && (
+        <p className="text-xs text-zinc-400 mt-1 truncate">{uniqueFiles.join("  ·  ")}</p>
+      )}
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {sources.map((s, i) => (
+            <div key={s.chunk_id + i} className="bg-zinc-50 border border-zinc-200/60 rounded-lg px-2.5 py-2">
+              <p className="text-xs font-medium text-zinc-800 flex items-center gap-1.5">
+                <span className="badge bg-brand-50 text-brand-700 border border-brand-200 font-mono tabular-nums px-1.5">[{i + 1}]</span>
+                <FileText className="w-3 h-3 text-brand-500 flex-shrink-0" strokeWidth={2} />
+                <span className="truncate">{cleanSource(s.source)}</span>
+                <span className="text-zinc-400 flex-shrink-0">· p.{s.page}</span>
+              </p>
+              <p className="text-xs text-zinc-500 mt-1 leading-relaxed line-clamp-2 italic">"{s.text}"</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ClaimCard({ claim }: { claim: Claim }) {
@@ -104,6 +148,9 @@ export default function ChatMessage({ message }: Props) {
                 </span>
               )}
             </div>
+
+            {/* Sources — which PDFs this answer was retrieved from */}
+            {resp.sources?.length > 0 && <SourcesSection sources={resp.sources} />}
 
             {/* Claims toggle */}
             {resp.claims?.length > 0 && (

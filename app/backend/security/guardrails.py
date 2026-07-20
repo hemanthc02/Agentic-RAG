@@ -112,3 +112,48 @@ def sanitize_filename(filename: str) -> str:
 def validate_pdf_magic_bytes(content: bytes) -> bool:
     """Check that uploaded file is actually a PDF by its magic bytes."""
     return content[:4] == b"%PDF"
+
+
+# ── SSRF protection ──────────────────────────────────────────────────────────
+
+def is_public_https_url(url: str) -> bool:
+    """True only if ``url`` is HTTPS and its host resolves entirely to public
+    (globally-routable) IP addresses. Blocks server-side request forgery to
+    loopback/private/link-local/metadata endpoints (e.g. 127.0.0.1:11434,
+    169.254.169.254, 10.x, 192.168.x)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            return False
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 443,
+                                   proto=socket.IPPROTO_TCP)
+        if not infos:
+            return False
+        for info in infos:
+            ip = ipaddress.ip_address(info[4][0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def is_localhost_host(host: str) -> bool:
+    """True if ``host`` is loopback/localhost — the only target the Ollama
+    connectivity test is allowed to reach (prevents internal port scanning)."""
+    import ipaddress
+    from urllib.parse import urlparse
+
+    h = host if "//" in host else f"//{host}"
+    name = urlparse(h).hostname or host
+    if name in ("localhost", "localhost.localdomain"):
+        return True
+    try:
+        return ipaddress.ip_address(name).is_loopback
+    except ValueError:
+        return False

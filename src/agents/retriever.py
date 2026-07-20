@@ -73,8 +73,7 @@ def retriever_node(state: AgentState) -> dict:
         log.append({"stage": "retriever", "error": "index not found", "latency_ms": elapsed})
         return {"chunks": [], "retrieval_attempts": attempts + 1, "stage_log": log}
 
-    seen: set[str] = set()
-    merged: list[dict] = []
+    per_sq: list[list[dict]] = []
 
     for sq in sub_questions:
         hits = _search(store, sq, top_k=top_k)
@@ -86,14 +85,27 @@ def retriever_node(state: AgentState) -> dict:
                 logger.info("CRAG: rewriting '%s' → '%s'", sq[:60], new_query[:60])
                 hits = _search(store, new_query, top_k=top_k)
 
-        for h in hits:
-            if h["chunk_id"] not in seen:
-                seen.add(h["chunk_id"])
-                merged.append(h)
+        per_sq.append(hits)
 
-    # Sort by score descending, take top_k
-    merged.sort(key=lambda x: x["score"], reverse=True)
-    merged = merged[:top_k]
+    # Round-robin merge: each sub-question keeps its best-ranked chunks.
+    # (A plain global-score sort lets lexically-similar but useless chunks —
+    # appendix tables, metric sections — crowd out the chunk that actually
+    # answers a sub-question.) Cloud mode affords a slightly larger context;
+    # local (CPU) mode stays at top_k to keep prompt-processing time sane.
+    cap = max(top_k, 8) if state.get("mode") != "local" else top_k
+    seen: set[str] = set()
+    merged: list[dict] = []
+    rank = 0
+    while len(merged) < cap and any(rank < len(h) for h in per_sq):
+        for hits in per_sq:
+            if rank < len(hits):
+                h = hits[rank]
+                if h["chunk_id"] not in seen:
+                    seen.add(h["chunk_id"])
+                    merged.append(h)
+                    if len(merged) >= cap:
+                        break
+        rank += 1
 
     elapsed = int((time.perf_counter() - t0) * 1000)
     log = state.get("stage_log", [])

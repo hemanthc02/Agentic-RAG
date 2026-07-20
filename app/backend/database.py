@@ -131,8 +131,8 @@ def init_db() -> None:
             provider        TEXT NOT NULL DEFAULT 'groq',
             ollama_host     TEXT NOT NULL DEFAULT 'http://localhost',
             ollama_port     INTEGER NOT NULL DEFAULT 11434,
-            ollama_model    TEXT NOT NULL DEFAULT 'phi3:mini',
-            groq_model      TEXT NOT NULL DEFAULT 'meta-llama/llama-4-scout-17b-16e-instruct',
+            ollama_model    TEXT NOT NULL DEFAULT 'phi4-mini',
+            groq_model      TEXT NOT NULL DEFAULT 'llama-3.3-70b-versatile',
             groq_api_key    TEXT DEFAULT '',
             updated_at      TEXT NOT NULL
         );
@@ -269,6 +269,18 @@ def delete_corpus(corpus_id: str, user_id: str) -> bool:
         return r.rowcount > 0
 
 
+def purge_corpus_data(corpus_id: str) -> None:
+    """Delete all rows keyed by corpus_id that lack an ON DELETE CASCADE FK
+    (knowledge graph, query history, viva sessions). Called on corpus delete so
+    a deleted corpus leaves no orphaned content — a right-to-erasure gap
+    otherwise. `documents`/`conversations` cascade via their FK already."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM knowledge_graph_edges WHERE corpus_id=?", (corpus_id,))
+        conn.execute("DELETE FROM knowledge_graph_nodes WHERE corpus_id=?", (corpus_id,))
+        conn.execute("DELETE FROM queries WHERE corpus_id=?", (corpus_id,))
+        conn.execute("DELETE FROM viva_sessions WHERE corpus_id=?", (corpus_id,))
+
+
 # ---------------------------------------------------------------------------
 # Documents
 # ---------------------------------------------------------------------------
@@ -379,6 +391,15 @@ def set_cached_response(cache_key: str, response: dict, ttl_hours: int = 24) -> 
         )
 
 
+def clear_query_cache() -> int:
+    """Purge the entire persistent query cache. Called when a corpus changes —
+    cache keys are hashed so we cannot filter by corpus_id, and nuking the small
+    cache is correct (answers just recompute) and avoids serving stale results."""
+    with get_conn() as conn:
+        cur = conn.execute("DELETE FROM query_cache")
+        return cur.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Conversations
 # ---------------------------------------------------------------------------
@@ -483,8 +504,8 @@ def get_user_settings(user_id: str) -> dict:
         return dict(
             user_id=user_id, llm_mode="cloud", provider="groq",
             ollama_host="http://localhost", ollama_port=11434,
-            ollama_model="phi3:mini",
-            groq_model="meta-llama/llama-4-scout-17b-16e-instruct",
+            ollama_model="phi4-mini",
+            groq_model="llama-3.3-70b-versatile",
             groq_api_key="", updated_at=_now(),
         )
 

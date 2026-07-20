@@ -55,7 +55,12 @@ def put(question: str, corpus_id: str, mode: str, provider: str, top_k: int,
 
 
 def invalidate_corpus(corpus_id: str) -> None:
-    """Clear in-memory cache entries that reference a corpus (approximate)."""
-    to_drop = [k for k in _mem._d if corpus_id in k]
-    for k in to_drop:
-        _mem._d.pop(k, None)
+    """Invalidate cached answers after a corpus changes.
+
+    Cache keys are MD5 hashes, so the in-memory layer can't be filtered by
+    corpus id reliably; we clear the whole in-memory LRU AND purge the SQLite
+    query_cache. Otherwise a repeat question returns a pre-change answer for up
+    to the 24h TTL (stale-answer bug)."""
+    _mem._d.clear()
+    from app.backend.database import clear_query_cache
+    clear_query_cache()

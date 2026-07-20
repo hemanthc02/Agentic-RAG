@@ -24,6 +24,17 @@ async def download_and_ingest(pdf_url: str, corpus_id: str, title: str = "") -> 
     if not pdf_url.startswith("https://"):
         return {"success": False, "error": "Only HTTPS PDF URLs are allowed"}
 
+    # SSRF guard: the host must resolve to a public IP. Blocks fetches aimed at
+    # loopback/private/metadata endpoints (e.g. the local Ollama daemon or a
+    # cloud metadata service).
+    try:
+        from app.backend.security.guardrails import is_public_https_url
+        if not is_public_https_url(pdf_url):
+            return {"success": False,
+                    "error": "URL host is not a public address (blocked for security)"}
+    except Exception:
+        pass  # guardrail import unavailable — https-only + PDF check still apply
+
     safe_name = _safe_filename(title or pdf_url.split("/")[-1])
     if not safe_name.endswith(".pdf"):
         safe_name += ".pdf"
@@ -38,7 +49,7 @@ async def download_and_ingest(pdf_url: str, corpus_id: str, title: str = "") -> 
     # Download
     try:
         async with httpx.AsyncClient(timeout=30.0, headers=_HEADERS,
-                                     follow_redirects=True) as client:
+                                     follow_redirects=True, max_redirects=3) as client:
             r = await client.get(pdf_url)
             r.raise_for_status()
             content = r.content
@@ -61,9 +72,13 @@ async def download_and_ingest(pdf_url: str, corpus_id: str, title: str = "") -> 
             dest.unlink(missing_ok=True)
             return {"success": False, "error": "PDF downloaded but could not be parsed"}
 
-        from src.retrieval import SentenceTransformerEmbedder, VectorStore
+        from app.backend.security.guardrails import sanitize_chunk_text
+        for c in chunks:  # neutralize embedded injection strings before indexing
+            c.text = sanitize_chunk_text(c.text)
+
+        from src.retrieval import VectorStore, get_shared_embedder, drop_cached_store
         idx_path, chunk_path = config.corpus_paths(corpus_id)
-        embedder = SentenceTransformerEmbedder()
+        embedder = get_shared_embedder()  # reuse the one process-wide model copy
 
         existing: list = []
         if idx_path.exists():
@@ -74,6 +89,7 @@ async def download_and_ingest(pdf_url: str, corpus_id: str, title: str = "") -> 
         store = VectorStore(embedder)
         store.build(existing + chunks)
         store.save(index_path=idx_path, chunk_path=chunk_path)
+        drop_cached_store(corpus_id)
 
         return {
             "success": True,

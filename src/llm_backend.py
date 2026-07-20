@@ -106,6 +106,52 @@ class GroqBackend(LLMBackend):
         return _with_retry(_call)
 
 
+class AnthropicBackend(LLMBackend):
+    """Cloud backend using Anthropic's Claude API. Requires ``ANTHROPIC_API_KEY``."""
+
+    name = "anthropic"
+
+    def __init__(self, model: str = config.ANTHROPIC_MODEL, api_key: str | None = None) -> None:
+        self.model = model
+        self._api_key = api_key or config.ANTHROPIC_API_KEY
+        if not self._api_key:
+            raise LLMBackendError("ANTHROPIC_API_KEY is not set")
+        self._client = None  # lazy-init
+
+    def _client_or_init(self):
+        if self._client is None:
+            from anthropic import Anthropic  # lazy import
+
+            self._client = Anthropic(api_key=self._api_key)
+        return self._client
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        temperature: float = config.DEFAULT_TEMPERATURE,
+        max_tokens: int = config.DEFAULT_MAX_TOKENS,
+    ) -> str:
+        client = self._client_or_init()
+
+        def _call() -> str:
+            # NOTE: the newest Claude models (Sonnet 5, Opus 4.8) reject the
+            # `temperature` parameter, so we do not send it — Claude uses its
+            # sensible default. This keeps every Claude model working.
+            resp = client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            # resp.content is a list of content blocks; concatenate text blocks.
+            return "".join(
+                getattr(b, "text", "") for b in resp.content
+                if getattr(b, "type", "") == "text"
+            )
+
+        return _with_retry(_call)
+
+
 class OllamaBackend(LLMBackend):
     """Local backend using an Ollama daemon. Nothing leaves the device."""
 
@@ -151,17 +197,30 @@ def get_backend(
       2. ``provider``      → route to that specific backend
       3. ``config.LLM_MODE / config.LLM_PROVIDER`` defaults
 
-    Supported providers in the research stack: "groq", "ollama".
+    Supported providers: "anthropic" (Claude), "groq" (Llama), "ollama" (local).
     """
     resolved_mode = (mode or config.LLM_MODE).lower()
-    resolved_provider = (provider or config.LLM_PROVIDER).lower()
 
-    if resolved_mode == "local" or resolved_provider == "ollama":
+    # Offline / local mode always uses the on-device Ollama model.
+    if resolved_mode == "local":
         return OllamaBackend()
+
+    # Cloud mode. The web UI hardcodes provider="groq" for the Online toggle, so
+    # honor the configured cloud provider from .env (LLM_PROVIDER) as the source
+    # of truth — set LLM_PROVIDER=anthropic to route Online through Claude.
+    resolved_provider = (provider or config.LLM_PROVIDER).lower()
+    configured = config.LLM_PROVIDER.lower()
+    if configured in ("anthropic", "groq") and resolved_provider in ("groq", "anthropic"):
+        resolved_provider = configured
+
+    if resolved_provider == "anthropic":
+        return AnthropicBackend()
     if resolved_provider == "groq":
         return GroqBackend()
+    if resolved_provider == "ollama":
+        return OllamaBackend()
 
     raise LLMBackendError(
-        f"Provider {resolved_provider!r} is not available. The app offers two "
-        "models only: 'groq' (cloud, Llama 4 Scout 17B) or 'ollama' (local, Phi-3 mini)."
+        f"Provider {resolved_provider!r} is not available. Supported: "
+        "'anthropic' (Claude), 'groq' (Llama), 'ollama' (local)."
     )

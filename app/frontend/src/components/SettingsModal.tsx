@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import toast from "react-hot-toast";
-import { Settings, X, Eye, EyeOff, CheckCircle, XCircle, Loader, Cloud, Monitor } from "lucide-react";
+import { Settings, X, CheckCircle, XCircle, Loader, Cloud, Monitor } from "lucide-react";
 import { settingsApi } from "../api/client";
 import { useStore } from "../store/useStore";
 import type { UserSettings } from "../types";
@@ -14,20 +14,18 @@ interface Props {
 type TestState = "idle" | "testing" | "ok" | "fail";
 
 export default function SettingsModal({ open, onClose }: Props) {
-  const { userSettings, setUserSettings, setMode, setProvider } = useStore();
+  const { setUserSettings, setMode, setProvider } = useStore();
 
   const [form, setForm] = useState<Partial<UserSettings> & { groq_api_key: string }>({
     llm_mode: "cloud",
-    provider: "groq",
+    provider: "anthropic",
     ollama_host: "http://localhost",
     ollama_port: 11434,
-    ollama_model: "phi3:mini",
-    groq_model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    ollama_model: "phi4-mini",
+    groq_model: "claude-sonnet-5",
     groq_api_key: "",
   });
-  const [showKey, setShowKey] = useState(false);
   const [ollamaTest, setOllamaTest] = useState<TestState>("idle");
-  const [groqTest, setGroqTest] = useState<TestState>("idle");
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
@@ -64,17 +62,6 @@ export default function SettingsModal({ open, onClose }: Props) {
       if (data.ok) setOllamaModels(data.models);
     } catch {
       setOllamaTest("fail");
-    }
-  }
-
-  async function testGroq() {
-    setGroqTest("testing");
-    try {
-      const { data } = await settingsApi.testGroq(form.groq_api_key);
-      setGroqTest(data.ok ? "ok" : "fail");
-      if (!data.ok) toast.error(data.error ?? "Invalid API key");
-    } catch {
-      setGroqTest("fail");
     }
   }
 
@@ -145,7 +132,7 @@ export default function SettingsModal({ open, onClose }: Props) {
                       }`}
                     >
                       {m === "local" ? <Monitor className="w-4 h-4" /> : <Cloud className="w-4 h-4" />}
-                      {m === "local" ? "Offline (Ollama)" : "Online (Groq)"}
+                      {m === "local" ? "Offline (Ollama)" : "Online (Claude)"}
                     </button>
                   ))}
                 </div>
@@ -153,7 +140,7 @@ export default function SettingsModal({ open, onClose }: Props) {
                   <span className={`w-2 h-2 rounded-full flex-shrink-0 ${isOffline ? "bg-emerald-500" : "bg-amber-500"}`} />
                   {isOffline
                     ? "Nothing leaves your device"
-                    : "Questions + retrieved chunks sent to Groq (HTTPS)"}
+                    : "Questions + retrieved chunks sent to Anthropic (HTTPS)"}
                 </p>
               </section>
 
@@ -222,62 +209,36 @@ export default function SettingsModal({ open, onClose }: Props) {
                 </div>
               </section>
 
-              {/* Online / Groq settings */}
-              <section className={!isOffline ? "" : "opacity-50 pointer-events-none"}>
+              {/* Models in use (read-only — no keys are entered in the app) */}
+              <section>
                 <label className="text-xs font-semibold text-zinc-500 uppercase tracking-wider block mb-3">
-                  Groq (Online)
+                  Models in use
                 </label>
-                <div className="space-y-3">
-                  <div>
-                    <label className="text-xs text-zinc-500 mb-1 block">Groq API Key</label>
-                    <div className="relative">
-                      <input
-                        type={showKey ? "text" : "password"}
-                        className="input text-sm py-2 w-full pr-10"
-                        value={form.groq_api_key}
-                        onChange={(e) => patch("groq_api_key", e.target.value)}
-                        placeholder={userSettings?.groq_api_key_masked || "gsk_…"}
-                      />
-                      <button
-                        onClick={() => setShowKey((v) => !v)}
-                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-900 transition-colors"
-                      >
-                        {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
+                <div className="space-y-2.5">
+                  <div className="rounded-xl border border-zinc-200/60 bg-zinc-50 px-4 py-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-zinc-900">Claude Sonnet 5</p>
+                      <p className="text-xs text-zinc-500 mt-0.5">Online — writes answers in the cloud (fast)</p>
                     </div>
-                    <p className="text-xs text-zinc-500 mt-1">
-                      Leave blank to keep existing key. Get a free key at console.groq.com
-                    </p>
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-brand-50 text-brand-700 border border-brand-200 font-medium">Online</span>
                   </div>
-
-                  <div>
-                    <label className="text-xs text-zinc-500 mb-1 block">Model</label>
-                    <select className="input text-sm py-2 w-full"
-                      value={form.groq_model}
-                      onChange={(e) => patch("groq_model", e.target.value)}>
-                      <option value="meta-llama/llama-4-scout-17b-16e-instruct">Llama 4 Scout 17B</option>
-                      <option value="meta-llama/llama-4-maverick-17b-128e-instruct">Llama 4 Maverick 17B</option>
-                      <option value="llama-3.3-70b-versatile">Llama 3.3 70B</option>
-                      <option value="mixtral-8x7b-32768">Mixtral 8x7B</option>
-                      <option value="gemma2-9b-it">Gemma 2 9B</option>
-                    </select>
+                  <div className="rounded-xl border border-zinc-200/60 bg-zinc-50 px-4 py-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-zinc-900">phi4-mini</p>
+                      <p className="text-xs text-zinc-500 mt-0.5">Offline — writes answers on your device (private)</p>
+                    </div>
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium">Offline</span>
                   </div>
-
-                  <button onClick={testGroq} disabled={groqTest === "testing"}
-                    className="btn-ghost text-sm flex items-center gap-2 py-2 transition duration-150 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-brand-500">
-                    <TestIcon state={groqTest} />
-                    {groqTest === "testing" ? "Testing…" : "Validate API key"}
-                  </button>
-                  {groqTest === "ok" && (
-                    <p className="text-xs px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-700">
-                      API key valid.
-                    </p>
-                  )}
-                  {groqTest === "fail" && (
-                    <p className="text-xs px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-600">
-                      Validation failed. Check the API key, then try again.
-                    </p>
-                  )}
+                  <div className="rounded-xl border border-zinc-200/60 bg-zinc-50 px-4 py-3 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-zinc-900">MiniLM · DeBERTa NLI</p>
+                      <p className="text-xs text-zinc-500 mt-0.5">Meaning search &amp; citation verification (always local)</p>
+                    </div>
+                    <span className="text-xs px-2.5 py-1 rounded-full bg-zinc-100 text-zinc-600 border border-zinc-200 font-medium">Local</span>
+                  </div>
+                  <p className="text-xs text-zinc-400 pt-1">
+                    API keys are configured securely on the server — nothing sensitive is entered in the app.
+                  </p>
                 </div>
               </section>
             </div>

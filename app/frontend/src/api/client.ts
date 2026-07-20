@@ -1,6 +1,6 @@
 import axios from "axios";
 import type {
-  ConnectionTestResult, Conversation, Corpus, Document, KGEdge, KGNode, Message,
+  ConnectionTestResult, Conversation, Corpus, Document, Message,
   NetworkStatus, Paper, QueryHistoryItem, QueryResponse,
   SystemConfig, User, UserSettings, VivaEvaluation,
 } from "../types";
@@ -100,7 +100,7 @@ export const conversationsApi = {
     api.post<Message>(`/api/conversations/${convId}/messages`, { role, content, metadata }),
 };
 
-// Research guide, viva, paper search, knowledge graph
+// Research guide, viva, paper search
 export const researchApi = {
   guide: (params: {
     question: string; corpus_id: string; conversation_id?: string;
@@ -110,16 +110,6 @@ export const researchApi = {
   gapAnalysis: (corpus_id: string, mode?: string, provider?: string) =>
     api.post<{ analysis: string; chunks: object[]; latency_ms: number }>(
       `/api/research/gap-analysis?corpus_id=${corpus_id}&mode=${mode ?? "cloud"}&provider=${provider ?? "groq"}`
-    ),
-
-  buildKG: (corpus_id: string, mode?: string, provider?: string) =>
-    api.post<{ nodes: number; edges: number }>(
-      `/api/research/knowledge-graph/build?corpus_id=${corpus_id}&mode=${mode ?? "cloud"}&provider=${provider ?? "groq"}`
-    ),
-
-  getKG: (corpus_id: string) =>
-    api.get<{ nodes: KGNode[]; edges: KGEdge[]; node_count: number; edge_count: number }>(
-      `/api/research/knowledge-graph/${corpus_id}`
     ),
 
   createVivaSession: (params: { corpus_id: string; difficulty?: string }) =>

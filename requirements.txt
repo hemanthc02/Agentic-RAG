@@ -1,54 +1,58 @@
-# Multi-Agent RAG — pinned minimums (CPU only, no GPU/CUDA wheels).
+# Multi-Agent RAG — EXACT pins (CPU only, no GPU/CUDA wheels).
+# Pinned 2026-07-10 to the versions verified working for the demo, so a
+# transitive release can't silently change model behavior before submission.
 # Install into a clean venv:  pip install -r requirements.txt
 # Torch must be the CPU build; install it first from the CPU index if needed:
 #   pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 # --- Core ML / embeddings / NLI (CPU) ---
-torch>=2.2.0
-sentence-transformers>=2.7.0
-transformers>=4.40.0
-faiss-cpu>=1.8.0
+torch==2.12.1
+sentence-transformers==5.6.0
+transformers==5.13.0
+faiss-cpu==1.14.3
 
 # --- Orchestration ---
-langgraph>=0.2.0
-langchain>=0.2.0
-langchain-core>=0.2.0
-langchain-groq>=0.1.6
-langchain-ollama>=0.1.0
+langgraph==1.2.7
+langchain==1.3.11
+langchain-core==1.4.8
+langchain-groq==1.1.3
+langchain-ollama==1.1.0
 
 # --- LLM backends ---
-groq>=0.9.0
+groq==0.37.1
+anthropic>=0.40.0        # Claude cloud backend (online mode)
 
 # --- PDF parsing ---
-PyMuPDF>=1.24.0
+PyMuPDF==1.28.0
 
 # --- Structured data / config ---
-pydantic>=2.7.0
-python-dotenv>=1.0.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
 
 # --- Evaluation ---
-ragas>=0.1.9
-datasets>=2.19.0
-scipy>=1.11.0            # paired t-test p-values in src/evaluation.py
+ragas==0.4.3
+datasets==5.0.0
+scipy==1.18.0            # paired t-test p-values in src/evaluation.py
 
 # --- Auth ---
-bcrypt>=4.1.0
-PyJWT>=2.8.0
+bcrypt==5.0.0
+PyJWT==2.13.0
+email-validator==2.3.0   # required by pydantic EmailStr in auth_router
 
-# --- HTTP client (status endpoint pings) ---
-httpx>=0.27.0
+# --- HTTP client (status endpoint pings, paper download) ---
+httpx==0.28.1
 
-# --- Gemini, NVIDIA NIM, OpenRouter ---
-google-generativeai>=0.7.0
-openai>=1.40.0            # NVIDIA NIM + OpenRouter share the OpenAI-compatible SDK
+# --- Gemini, NVIDIA NIM, OpenRouter (optional providers) ---
+google-generativeai==0.8.6
+openai==2.44.0           # NVIDIA NIM + OpenRouter share the OpenAI-compatible SDK
 
-# --- Backend API (FastAPI + React frontend; replaces the Streamlit UI) ---
-fastapi>=0.111.0
-uvicorn[standard]>=0.30.0
-python-multipart>=0.0.9   # PDF upload support for /api/ingest
-pydantic-settings>=2.3.0
+# --- Backend API (FastAPI + React frontend) ---
+fastapi==0.139.0
+uvicorn[standard]==0.50.2
+python-multipart==0.0.32  # PDF upload support
 
 # --- Dev / tooling ---
-pytest>=8.2.0
-black>=24.4.0
-ruff>=0.4.0
+pytest==9.1.1
+black==26.5.1
+ruff==0.15.20

@@ -17,22 +17,33 @@ from app.backend import database as db
 logger = logging.getLogger(__name__)
 
 _ALGO = "HS256"  # symmetric — the configured value is a shared SECRET, not a keypair
-_TTL_HOURS = 24
 _ENV = os.getenv("APP_ENV", "development").lower()
+# Token lifetime honours JWT_ACCESS_TTL_SECONDS (default 24h) instead of a
+# hard-coded constant, so a deployment can shrink the replay window.
+_TTL_SECONDS = int(os.getenv("JWT_ACCESS_TTL_SECONDS", str(24 * 3600)))
+
+# Known placeholder / example secrets that must NEVER be accepted as a real
+# signing key — anyone reading the repo or a copied .env could forge tokens.
+_PLACEHOLDER_SECRETS = {
+    "dev-only-insecure-key-not-for-deployment",
+    "dummy-jwt-private-key-replace-me-with-real-rsa-or-ec-key",
+    "changeme", "secret", "your-secret-key", "",
+}
 
 # F-05 fix: never sign with a hard-coded default in a real environment.
 # Accept JWT_SECRET (preferred for HS256) or legacy JWT_PRIVATE_KEY.
-_SECRET = os.getenv("JWT_SECRET") or os.getenv("JWT_PRIVATE_KEY")
-if not _SECRET:
-    if _ENV in ("production", "staging", "prod"):
+_SECRET = (os.getenv("JWT_SECRET") or os.getenv("JWT_PRIVATE_KEY") or "").strip()
+_is_prod = _ENV in ("production", "staging", "prod")
+if _SECRET in _PLACEHOLDER_SECRETS:
+    if _is_prod:
         raise RuntimeError(
-            "JWT_SECRET (or JWT_PRIVATE_KEY) must be set in production/staging. "
-            "Refusing to start with a default signing key (token-forgery risk)."
+            "JWT_SECRET is unset or a known placeholder. Refusing to start with a "
+            "forgeable signing key. Set a random 256-bit JWT_SECRET."
         )
     _SECRET = "dev-only-insecure-key-not-for-deployment"
     logger.warning(
-        "JWT secret not set; using an insecure development-only key (APP_ENV=%s). "
-        "Set JWT_SECRET before any non-dev deployment.",
+        "JWT secret is a placeholder; using an insecure DEV-ONLY key (APP_ENV=%s). "
+        "Tokens are forgeable — set a random JWT_SECRET before sharing or deploying.",
         _ENV,
     )
 
@@ -52,7 +63,7 @@ def create_token(user_id: str, email: str) -> str:
         "sub": user_id,
         "email": email,
         "iat": datetime.utcnow(),
-        "exp": datetime.utcnow() + timedelta(hours=_TTL_HOURS),
+        "exp": datetime.utcnow() + timedelta(seconds=_TTL_SECONDS),
     }
     return jwt.encode(payload, _SECRET, algorithm=_ALGO)
 

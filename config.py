@@ -4,8 +4,10 @@ This module is the ONLY place where paths, model identifiers, and magic numbers
 live. Agent code must import from here rather than hard-coding values.
 
 The application ships with exactly TWO selectable models:
-    * online  — Groq ``meta-llama/llama-4-scout-17b-16e-instruct`` (cloud, fast)
-    * offline — Ollama ``phi3:mini`` (fully on-device; nothing leaves the laptop)
+    * online  — Groq (cloud). In cloud mode the question and the retrieved chunk
+      excerpts are sent to Groq's US API over HTTPS.
+    * offline — Ollama (fully on-device). ONLY in local/offline mode does nothing
+      leave the laptop; the "private, on-device" guarantee is mode-specific.
 
 Key environment variables (loaded from ``.env`` if present):
     LLM_MODE      "cloud" (default, → Groq) | "local" (→ Ollama, auto-detected)
@@ -83,13 +85,18 @@ LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq")  # "groq" | "ollama"
 # The two models
 # --------------------------------------------------------------------------- #
 
-# Online: Groq — Llama 4 Scout (17B active, 16-expert MoE; fast, free tier).
+# Online provider selector: "anthropic" (Claude) or "groq" (Llama). Set in .env.
+# Online: Groq — default matches .env (Llama 3.3 70B versatile). Override via GROQ_MODEL.
 GROQ_API_KEY: str | None = os.getenv("GROQ_API_KEY")
-GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-# Offline: Ollama — Phi-3 mini (~2.2 GB Q4; CPU-only, nothing leaves the device).
+# Online: Anthropic — Claude. Requires ANTHROPIC_API_KEY. Model overridable via ANTHROPIC_MODEL.
+ANTHROPIC_API_KEY: str | None = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5")
+
+# Offline: Ollama — default matches .env (phi4-mini; CPU-only, nothing leaves the device).
 OLLAMA_HOST: str = os.getenv("OLLAMA_HOST", os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
-OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "phi3:mini")
+OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "phi4-mini")
 # HTTP timeout per Ollama generate call. CPU prompt processing on long grounded
 # prompts can exceed 120 s on low-RAM machines, so this is deliberately generous.
 OLLAMA_TIMEOUT_S: int = int(os.getenv("OLLAMA_TIMEOUT_S", "480"))
@@ -108,6 +115,12 @@ CHUNK_OVERLAP: int = 64    # characters
 TOP_K: int = 5
 FAISS_FLAT_MAX_CHUNKS: int = 5_000
 RETRIEVAL_RELEVANCE_THRESHOLD: float = 0.5
+# If the best cosine score for a question is below this floor, nothing in the
+# corpus is even loosely related — the pipeline is skipped with an honest
+# "not in your PDFs" answer instead of letting the LLM hallucinate.
+# (Measured on the reference corpus: real questions score 0.49+, greetings
+# and off-topic questions 0.16-0.40.)
+OFFTOPIC_SCORE_FLOOR: float = float(os.getenv("OFFTOPIC_SCORE_FLOOR", "0.35"))
 
 
 # --------------------------------------------------------------------------- #
@@ -115,6 +128,12 @@ RETRIEVAL_RELEVANCE_THRESHOLD: float = 0.5
 # --------------------------------------------------------------------------- #
 CITATION_FAITHFULNESS_THRESHOLD: float = 0.6
 MAX_VERIFIER_RETRIES: int = 2
+# An answer is only "verified" if its cited claims pass AND uncited sentences do
+# not dominate. Without this, an answer made mostly of uncited sentences (which
+# are excluded from the faithfulness mean) could be flagged verified=True with a
+# high score — gaming the very metric the verifier exists to protect. The cited
+# fraction must be at least this high for the answer to be considered verified.
+MIN_CITED_RATIO: float = float(os.getenv("MIN_CITED_RATIO", "0.5"))
 
 
 # --------------------------------------------------------------------------- #
@@ -124,6 +143,17 @@ DEFAULT_TEMPERATURE: float = 0.0
 DEFAULT_MAX_TOKENS: int = 1024
 RETRY_BACKOFF_SECONDS: tuple[int, ...] = (1, 2, 4)
 MAX_LLM_ATTEMPTS: int = 3
+
+# --------------------------------------------------------------------------- #
+# Offline (local model) speed optimisation
+# The local model runs on a CPU, so latency is dominated by (a) prompt length,
+# (b) tokens generated, and (c) the number of synthesizer revision passes.
+# These tighter limits are used ONLY in offline mode to cut answer time
+# roughly in half with minimal quality loss.
+# --------------------------------------------------------------------------- #
+OFFLINE_TOP_K: int = int(os.getenv("OFFLINE_TOP_K", "3"))          # fewer chunks -> shorter prompt
+OFFLINE_MAX_TOKENS: int = int(os.getenv("OFFLINE_MAX_TOKENS", "512"))  # shorter answer -> faster
+OFFLINE_MAX_REVISIONS: int = int(os.getenv("OFFLINE_MAX_REVISIONS", "1"))  # at most 1 rewrite
 
 
 # --------------------------------------------------------------------------- #

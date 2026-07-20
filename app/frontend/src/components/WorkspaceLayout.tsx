@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   BookOpen, Cloud, GraduationCap, HardDrive, LogOut,
-  MessageSquareText, Search as SearchIcon, Settings,
+  MessageSquareText, Search as SearchIcon, Settings, Network,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { systemApi } from "../api/client";
@@ -12,6 +12,7 @@ import AskPage from "../pages/AskPage";
 import ResearchGuidePage from "../pages/ResearchGuidePage";
 import VivaPage from "../pages/VivaPage";
 import PaperFinderPage from "../pages/PaperFinderPage";
+import AgentNetworkPage from "../pages/AgentNetworkPage";
 import type { LLMMode } from "../types";
 
 const TABS = [
@@ -19,6 +20,7 @@ const TABS = [
   { to: "/app/guide",  label: "Research guide", Icon: BookOpen,          end: false },
   { to: "/app/viva",   label: "Viva",           Icon: GraduationCap,     end: false },
   { to: "/app/papers", label: "Papers",         Icon: SearchIcon,        end: false },
+  { to: "/app/agents", label: "Agents",         Icon: Network,           end: false },
 ];
 
 export default function WorkspaceLayout() {
@@ -59,7 +61,7 @@ export default function WorkspaceLayout() {
         toast.error("Couldn't reach the backend to check Ollama status.");
       }
     } else {
-      toast.success("Online mode — Groq cloud model");
+      toast.success("Online mode — Anthropic Claude");
     }
   }
 
@@ -79,6 +81,7 @@ export default function WorkspaceLayout() {
     path.startsWith("/app/guide") ? "guide"
     : path.startsWith("/app/viva") ? "viva"
     : path.startsWith("/app/papers") ? "papers"
+    : path.startsWith("/app/agents") ? "agents"
     : "ask";
 
   // Covers deep links / page reloads landing on Papers while offline.
@@ -142,7 +145,7 @@ export default function WorkspaceLayout() {
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-medium transition-all active:scale-[0.98] ${
                 !offline ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
               }`}
-              title="Groq cloud — Llama 4 Scout 17B. Question and retrieved passages leave this device."
+              title="Anthropic Claude (cloud). Question and retrieved passages leave this device."
             >
               <Cloud className="w-3.5 h-3.5" strokeWidth={2} />
               Online
@@ -174,7 +177,7 @@ export default function WorkspaceLayout() {
                 offline ? (ollamaUp ? "bg-emerald-500" : "bg-red-500") : "bg-brand-500"
               }`}
             />
-            {offline ? (ollamaUp ? "Private — on-device" : "Ollama offline") : "Cloud — Groq"}
+            {offline ? (ollamaUp ? "Private — on-device" : "Ollama offline") : "Cloud — Claude"}
           </span>
 
           <button
@@ -208,6 +211,7 @@ export default function WorkspaceLayout() {
         <div className={activeTab === "guide" ? "h-full" : "hidden"}><ResearchGuidePage /></div>
         <div className={activeTab === "viva" ? "h-full" : "hidden"}><VivaPage /></div>
         <div className={activeTab === "papers" ? "h-full" : "hidden"}><PaperFinderPage /></div>
+        <div className={activeTab === "agents" ? "h-full" : "hidden"}><AgentNetworkPage /></div>
       </div>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

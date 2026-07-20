@@ -2,7 +2,7 @@
 
 export type LLMMode = "cloud" | "local";
 // The app exposes exactly two models: Groq (cloud) and Ollama (offline).
-export type ProviderName = "groq" | "ollama";
+export type ProviderName = "anthropic" | "groq" | "ollama";
 
 export interface User {
   id: string;

@@ -70,6 +70,13 @@ async def test_ollama(
     host: str = "http://localhost",
     port: int = 11434,
 ):
+    # SSRF guard: the Ollama connectivity test may only reach a local daemon.
+    # Without this, a user could point it at arbitrary internal hosts to scan
+    # ports / probe metadata endpoints.
+    from app.backend.security.guardrails import is_localhost_host
+    if not is_localhost_host(host):
+        return {"ok": False, "models": [],
+                "error": "Only a local Ollama host (localhost/127.0.0.1) is allowed."}
     url = f"{host}:{port}/api/tags"
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
