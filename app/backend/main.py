@@ -79,6 +79,14 @@ def startup():
             logger.info("Embedding model pre-warmed and shared")
         except Exception as exc:
             logger.warning("Embedder pre-warm failed (will load on demand): %s", exc)
+        try:
+            # Pre-load the NLI verifier model too, so the first query's
+            # verification step doesn't pay the model-load + online-check cost.
+            from src.agents.verifier import _get_nli
+            _get_nli()
+            logger.info("NLI verifier model pre-warmed")
+        except Exception as exc:
+            logger.warning("NLI pre-warm failed (will load on demand): %s", exc)
 
     threading.Thread(target=_warm, daemon=True).start()
 

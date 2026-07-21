@@ -55,6 +55,8 @@ export const corpusApi = {
   },
   deleteDoc: (corpusId: string, docId: string) =>
     api.delete(`/api/corpora/${corpusId}/documents/${docId}`),
+  fileBlob: (corpusId: string, name: string) =>
+    api.get(`/api/corpora/${corpusId}/file`, { params: { name }, responseType: "blob" }),
 };
 
 // Query

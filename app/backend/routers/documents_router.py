@@ -7,8 +7,9 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import config
@@ -75,6 +76,26 @@ def list_documents(corpus_id: str,
     if not db.get_corpus(corpus_id, user["id"]):
         raise HTTPException(404, "Corpus not found")
     return db.list_documents(corpus_id)
+
+
+@router.get("/corpora/{corpus_id}/file")
+def get_pdf_file(
+    corpus_id: str,
+    user: Annotated[dict, Depends(auth.get_current_user)],
+    name: str = Query(..., description="The stored PDF filename (chunk source)"),
+):
+    """Serve a corpus PDF so the frontend can display it in an in-app viewer.
+
+    Access is gated on corpus ownership; ``name`` is reduced to a bare filename
+    to prevent any path traversal outside the corpus's PDF directory.
+    """
+    if not db.get_corpus(corpus_id, user["id"]):
+        raise HTTPException(404, "Corpus not found")
+    safe = Path(name).name  # strip any path components
+    path = config.PDF_DIR / corpus_id / safe
+    if not path.is_file():
+        raise HTTPException(404, "PDF not found")
+    return FileResponse(str(path), media_type="application/pdf", filename=safe)
 
 
 @router.post("/corpora/{corpus_id}/upload", status_code=201)

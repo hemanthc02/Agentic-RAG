@@ -32,6 +32,10 @@ interface AppState {
   documents: Document[];
   setDocuments: (d: Document[]) => void;
 
+  // In-app PDF viewer: which source PDF (+ page) to show in the side panel.
+  viewingPdf: { corpusId: string; name: string; page: number } | null;
+  setViewingPdf: (v: { corpusId: string; name: string; page: number } | null) => void;
+
   // PDF upload — kept in the store (not component state) so navigating to
   // another tab mid-upload doesn't lose the queue or the progress bar.
   uploadQueue: File[];
@@ -103,6 +107,9 @@ export const useStore = create<AppState>()(
 
       documents: [],
       setDocuments: (d) => set({ documents: d }),
+
+      viewingPdf: null,
+      setViewingPdf: (v) => set({ viewingPdf: v }),
 
       uploadQueue: [],
       setUploadQueue: (f) =>

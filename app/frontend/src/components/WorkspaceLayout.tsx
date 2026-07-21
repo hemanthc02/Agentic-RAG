@@ -13,6 +13,7 @@ import ResearchGuidePage from "../pages/ResearchGuidePage";
 import VivaPage from "../pages/VivaPage";
 import PaperFinderPage from "../pages/PaperFinderPage";
 import AgentNetworkPage from "../pages/AgentNetworkPage";
+import PdfViewerPanel from "./PdfViewerPanel";
 import type { LLMMode } from "../types";
 
 const TABS = [
@@ -206,12 +207,15 @@ export default function WorkspaceLayout() {
         </div>
       </header>
 
-      <div className="flex-1 min-h-0">
-        <div className={activeTab === "ask" ? "h-full" : "hidden"}><AskPage /></div>
-        <div className={activeTab === "guide" ? "h-full" : "hidden"}><ResearchGuidePage /></div>
-        <div className={activeTab === "viva" ? "h-full" : "hidden"}><VivaPage /></div>
-        <div className={activeTab === "papers" ? "h-full" : "hidden"}><PaperFinderPage /></div>
-        <div className={activeTab === "agents" ? "h-full" : "hidden"}><AgentNetworkPage /></div>
+      <div className="flex-1 min-h-0 flex">
+        <div className="flex-1 min-w-0 h-full">
+          <div className={activeTab === "ask" ? "h-full" : "hidden"}><AskPage /></div>
+          <div className={activeTab === "guide" ? "h-full" : "hidden"}><ResearchGuidePage /></div>
+          <div className={activeTab === "viva" ? "h-full" : "hidden"}><VivaPage /></div>
+          <div className={activeTab === "papers" ? "h-full" : "hidden"}><PaperFinderPage /></div>
+          <div className={activeTab === "agents" ? "h-full" : "hidden"}><AgentNetworkPage /></div>
+        </div>
+        <PdfViewerPanel />
       </div>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
