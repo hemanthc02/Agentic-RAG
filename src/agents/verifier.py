@@ -30,12 +30,20 @@ def _get_nli():
         return _nli_pipeline
     _nli_load_attempted = True
     try:
+        # Use all CPU cores for inference (verification is the CPU bottleneck).
+        try:
+            import os as _os
+            import torch as _torch
+            _torch.set_num_threads(max(1, (_os.cpu_count() or 2)))
+        except Exception:
+            pass
         from transformers import pipeline as hf_pipeline
         _nli_pipeline = hf_pipeline(
             "text-classification",
             model=config.NLI_MODEL,
-            device=-1,   # CPU
+            device=-1,        # CPU
             top_k=None,
+            batch_size=16,    # batch window-pairs -> far fewer forward passes
         )
         logger.info("NLI model loaded: %s", config.NLI_MODEL)
     except Exception as exc:
@@ -44,8 +52,8 @@ def _get_nli():
     return _nli_pipeline
 
 
-def _premise_windows(premise: str, size: int = 4, stride: int = 2,
-                     max_windows: int = 12) -> list[str]:
+def _premise_windows(premise: str, size: int = 5, stride: int = 3,
+                     max_windows: int = 6) -> list[str]:
     """Split evidence text into overlapping sentence windows for NLI scoring.
 
     MNLI-trained cross-encoders are calibrated on short (1–4 sentence)
@@ -198,14 +206,24 @@ def verify_answer(answer: str, chunks: list[dict],
                 # Citation repair: is the claim entailed by a DIFFERENT
                 # retrieved chunk? (single-citation sentences only, so the
                 # marker rewrite below is unambiguous)
+                # PERF: only try the top few most-relevant alternatives and stop
+                # the moment one supports the claim. Without this cap, an answer
+                # whose claims all fail would trigger claims x chunks x windows
+                # NLI passes on CPU — the cause of multi-minute verification.
                 cited_ids = {c["chunk_id"] for c in cited_chunks}
                 best_idx, best_score = None, avg_score
+                tried = 0
                 for idx, c in enumerate(chunks, 1):
                     if c["chunk_id"] in cited_ids:
                         continue
                     s = _nli_score(c["text"], sent)
                     if s > best_score:
                         best_idx, best_score = idx, s
+                    if best_score >= config.CITATION_FAITHFULNESS_THRESHOLD:
+                        break  # found a supporting source — no need to keep scanning
+                    tried += 1
+                    if tried >= config.MAX_REPAIR_ALTERNATIVES:
+                        break
                 if best_idx is not None and best_score >= config.CITATION_FAITHFULNESS_THRESHOLD:
                     corrected_to = best_idx
                     fixed_sent = sent.replace(f"[{refs[0]}]", f"[{best_idx}]")

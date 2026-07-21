@@ -128,6 +128,10 @@ OFFTOPIC_SCORE_FLOOR: float = float(os.getenv("OFFTOPIC_SCORE_FLOOR", "0.35"))
 # --------------------------------------------------------------------------- #
 CITATION_FAITHFULNESS_THRESHOLD: float = 0.6
 MAX_VERIFIER_RETRIES: int = 2
+# Citation repair (when a cited chunk fails, look for a better one) checks at
+# most this many alternative chunks, and stops early once one supports the
+# claim. Bounds CPU-side NLI work so verification stays fast.
+MAX_REPAIR_ALTERNATIVES: int = int(os.getenv("MAX_REPAIR_ALTERNATIVES", "2"))
 # An answer is only "verified" if its cited claims pass AND uncited sentences do
 # not dominate. Without this, an answer made mostly of uncited sentences (which
 # are excluded from the faithfulness mean) could be flagged verified=True with a

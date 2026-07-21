@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { ChevronDown, ChevronUp, User, Sparkles, Zap, BookOpen, FileText } from "lucide-react";
-import type { ChatMessage as ChatMessageType, Claim, CitedChunk } from "../types";
+import { ChevronDown, ChevronUp, User, Sparkles, Zap, BookOpen, FileText, Route } from "lucide-react";
+import type { ChatMessage as ChatMessageType, Claim, CitedChunk, QueryResponse } from "../types";
 import { useStore } from "../store/useStore";
 
 function scoreBand(score: number) {
@@ -132,10 +132,85 @@ function ClaimCard({ claim }: { claim: Claim }) {
   );
 }
 
+/** A friendly, step-by-step account of how THIS answer was produced — so a
+ *  viewer understands the flow and why claims are (not) supported. */
+function ExplainFlow({ resp }: { resp: QueryResponse }) {
+  const stages = resp.stage_log || [];
+  const isGuard = stages[0]?.stage === ("guard" as any);
+  const cited = (resp.claims || []).filter((c) => c.cited_chunks && c.cited_chunks.length > 0);
+  const supported = cited.filter((c) => c.verdict).length;
+  const unsupported = cited.length - supported;
+  const retr: any = stages.find((s) => s.stage === "retriever");
+  const nPassages = retr?.chunks_found ?? resp.sources?.length ?? 0;
+  const paperCount = new Set((resp.sources || []).map((s) => cleanSource(s.source))).size;
+
+  const steps = isGuard
+    ? [
+        { title: "Recognised the question type", body: "This was a greeting or a question not related to your PDFs, so the system answered directly and honestly instead of searching — this avoids making things up." },
+      ]
+    : [
+        {
+          title: "1 · Understood your question (Planner)",
+          body: resp.sub_questions?.length
+            ? "It broke your question into focused sub-questions so each idea could be searched precisely:"
+            : "It used your question as a single focused search.",
+          chips: resp.sub_questions,
+        },
+        {
+          title: "2 · Searched your PDFs (Retriever)",
+          body: `It converted the question into "meaning" and found ${nPassages} of the most relevant passage${nPassages === 1 ? "" : "s"} across ${paperCount} paper${paperCount === 1 ? "" : "s"} — these became the numbered sources [1], [2], …`,
+        },
+        {
+          title: "3 · Wrote the answer (Synthesizer)",
+          body: "It wrote the answer using ONLY those passages and put a citation after every fact. It was told to add no outside knowledge.",
+        },
+        {
+          title: "4 · Checked every citation (Verifier)",
+          body: `It checked each sentence against the source it cites. ${supported} of ${cited.length} cited sentence${cited.length === 1 ? "" : "s"} are supported; ${unsupported} could not be confirmed by the source and ${unsupported === 1 ? "is" : "are"} flagged in red.`,
+        },
+      ];
+
+  return (
+    <div className="w-full bg-zinc-50 border border-zinc-200/60 rounded-xl p-3.5 space-y-3">
+      <p className="text-xs text-zinc-500 leading-relaxed">
+        Here is how the four agents produced this answer, step by step:
+      </p>
+      <ol className="space-y-2.5">
+        {steps.map((s, i) => (
+          <li key={i} className="flex gap-2.5">
+            <span className="mt-0.5 w-1.5 h-1.5 rounded-full bg-brand-500 flex-shrink-0" />
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-zinc-800">{s.title}</p>
+              <p className="text-xs text-zinc-600 leading-relaxed">{s.body}</p>
+              {(s as any).chips?.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {(s as any).chips.map((q: string, k: number) => (
+                    <span key={k} className="badge bg-white text-brand-700 border border-brand-200 text-[11px]">{q}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+      {!isGuard && (
+        <div className="text-xs text-zinc-600 bg-white border border-zinc-200/60 rounded-lg px-3 py-2 leading-relaxed">
+          <span className="font-semibold text-zinc-800">Why “supported” vs “not confirmed”?</span> For each
+          sentence, an evidence model reads the exact cited page and decides whether it truly backs the sentence.
+          <span className="text-emerald-700 font-medium"> Supported</span> = the page clearly says it.
+          <span className="text-red-700 font-medium"> Not confirmed</span> = the page doesn’t clearly say it, so the
+          system flags it honestly rather than pretending. A low score is the system being careful, not a bug.
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface Props { message: ChatMessageType }
 
 export default function ChatMessage({ message }: Props) {
   const [showClaims, setShowClaims] = useState(false);
+  const [showExplain, setShowExplain] = useState(false);
   const isUser = message.role === "user";
   const resp = message.response;
 
@@ -159,63 +234,59 @@ export default function ChatMessage({ message }: Props) {
           {message.text}
         </div>
 
-        {/* Response metadata */}
+        {/* Response metadata — compact summary + clean toggle buttons */}
         {resp && (
           <div className="flex flex-col gap-2 w-full">
-            {/* Sub-questions */}
-            {resp.sub_questions?.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 items-center">
-                <span className="text-xs text-zinc-500">Sub-queries:</span>
-                {resp.sub_questions.map((q, i) => (
-                  <span key={i} className="badge bg-brand-50 text-brand-700 border border-brand-200 text-xs">
-                    {q}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Summary bar */}
+            {/* Summary bar (compact) */}
             <div className="flex items-center gap-3 flex-wrap text-xs text-zinc-500">
               <span
                 className={`badge font-mono tabular-nums ${scoreBand(resp.overall_faithfulness)}`}
-                title="Overall faithfulness = average of how well the cited sources support the answer's sentences. Higher is better; low means the answer is only loosely backed by the sources (the offline model tends to score lower)."
+                title="Overall faithfulness = average of how well the cited sources support the answer's sentences. Higher is better."
               >
                 {(resp.overall_faithfulness * 100).toFixed(0)}% faithful
               </span>
               <span>{resp.provider}</span>
-              <span className="font-mono tabular-nums">{resp.latency_ms}ms</span>
+              <span className="font-mono tabular-nums">{(resp.latency_ms / 1000).toFixed(1)}s</span>
               {resp.retries > 0 && <span className="text-amber-700">{resp.retries} revision{resp.retries > 1 ? "s" : ""}</span>}
               {resp.is_cached && (
-                <span className="text-brand-700 flex items-center gap-1">
-                  <Zap className="w-3 h-3" /> cached
-                </span>
+                <span className="text-brand-700 flex items-center gap-1"><Zap className="w-3 h-3" /> cached</span>
               )}
             </div>
 
-            {/* Sources — which PDFs this answer was retrieved from */}
+            {/* Toggle buttons row — details stay hidden until asked (declutter) */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={() => setShowExplain((v) => !v)}
+                className={`text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-colors ${
+                  showExplain ? "bg-brand-50 border-brand-200 text-brand-700" : "bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50"}`}>
+                <Route className="w-3.5 h-3.5" /> How I got this answer
+              </button>
+              {resp.claims?.length > 0 && (
+                <button onClick={() => setShowClaims((v) => !v)}
+                  className={`text-xs flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-colors ${
+                    showClaims ? "bg-brand-50 border-brand-200 text-brand-700" : "bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50"}`}>
+                  <Sparkles className="w-3.5 h-3.5" /> {resp.claims.length} claim{resp.claims.length > 1 ? "s" : ""} checked
+                </button>
+              )}
+            </div>
+
+            {/* Explain flow */}
+            {showExplain && <ExplainFlow resp={resp} />}
+
+            {/* Sources — which PDFs this answer was retrieved from (click to open) */}
             {resp.sources?.length > 0 && <SourcesSection sources={resp.sources} />}
 
-            {/* Claims toggle */}
-            {resp.claims?.length > 0 && (
-              <>
-                <button onClick={() => setShowClaims((v) => !v)}
-                  className="text-xs text-zinc-500 hover:text-zinc-900 flex items-center gap-1 self-start transition-colors focus-visible:ring-2 focus-visible:ring-brand-500 rounded">
-                  {showClaims ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                  {resp.claims.length} claim{resp.claims.length > 1 ? "s" : ""} checked against sources
-                </button>
-                {showClaims && (
-                  <div className="space-y-2 w-full">
-                    <div className="text-xs text-zinc-500 bg-zinc-50 border border-zinc-200/60 rounded-lg px-3 py-2 leading-relaxed">
-                      Each sentence is checked against the source it cites.
-                      <span className="text-emerald-700 font-medium"> Green = the source supports it</span>,
-                      <span className="text-amber-700 font-medium"> amber = partial</span>,
-                      <span className="text-red-700 font-medium"> red / 0% = the source does not clearly confirm it</span>.
-                      A low score is the system being honest, not an error — the offline model in particular often phrases things the source doesn't directly back.
-                    </div>
-                    {resp.claims.map((c, i) => <ClaimCard key={i} claim={c} />)}
-                  </div>
-                )}
-              </>
+            {/* Per-claim verification detail */}
+            {showClaims && resp.claims?.length > 0 && (
+              <div className="space-y-2 w-full">
+                <div className="text-xs text-zinc-500 bg-zinc-50 border border-zinc-200/60 rounded-lg px-3 py-2 leading-relaxed">
+                  Each sentence is checked against the source it cites.
+                  <span className="text-emerald-700 font-medium"> Green = the source supports it</span>,
+                  <span className="text-amber-700 font-medium"> amber = partial</span>,
+                  <span className="text-red-700 font-medium"> red = the source does not clearly confirm it</span>.
+                  A low score is the system being honest, not an error.
+                </div>
+                {resp.claims.map((c, i) => <ClaimCard key={i} claim={c} />)}
+              </div>
             )}
           </div>
         )}
