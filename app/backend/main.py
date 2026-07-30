@@ -12,6 +12,28 @@ import logging
 import sys
 from pathlib import Path
 
+# --- UTF-8 hardening ---------------------------------------------------------
+# Azure App Service Linux runs under a C/POSIX (ASCII) locale. Without this,
+# logging or encoding non-ASCII PDF text (smart quotes, dashes, accents, math
+# symbols) mid-request raises "'ascii' codec can't encode characters". Force the
+# process to UTF-8 end to end so LLM calls over that text succeed. Runs before
+# anything logs; a no-op on Windows/local (already UTF-8). Belt-and-suspenders
+# with the PYTHONUTF8=1 app setting.
+import locale as _locale  # noqa: E402
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    except Exception:
+        pass
+for _loc in ("C.UTF-8", "en_US.UTF-8", ""):
+    try:
+        _locale.setlocale(_locale.LC_ALL, _loc)
+        break
+    except Exception:
+        continue
+# -----------------------------------------------------------------------------
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -35,6 +57,10 @@ from app.backend.routers import (  # noqa: E402
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# The Azure SDK logs every Blob request/response at INFO — far too noisy for the
+# App Service log stream. Keep warnings and errors only.
+logging.getLogger("azure").setLevel(logging.WARNING)
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
 
 app = FastAPI(
     title="Multi-Agent RAG API",
