@@ -15,8 +15,8 @@ import logging
 import time
 
 import config
+from src import search_backend
 from src.agents.state import AgentState
-from src.retrieval import VectorStore, load_vector_store
 
 logger = logging.getLogger(__name__)
 
@@ -27,13 +27,13 @@ _REWRITE_TMPL = (
 )
 
 
-def _load_store(corpus_id: str) -> VectorStore | None:
-    # Shared path scheme (config.corpus_paths) — identical to the one the
-    # retrieval CLI and the FastAPI app write to, so indexes are interchangeable.
-    return load_vector_store(corpus_id)
+def _load_store(corpus_id: str):
+    # Vector-store seam: FAISS on disk locally, or Azure AI Search when
+    # SEARCH_BACKEND=azure_search. Both expose .search(query, k).
+    return search_backend.get_store(corpus_id)
 
 
-def _search(store: VectorStore, query: str, top_k: int) -> list[dict]:
+def _search(store, query: str, top_k: int) -> list[dict]:
     # search returns list[RetrievalResult] with .chunk and .score
     results = store.search(query, k=top_k)
     return [

@@ -24,6 +24,11 @@ const TABS = [
   { to: "/app/agents", label: "Agents",         Icon: Network,           end: false },
 ];
 
+// Cloud-only build (e.g. deployed to Azure App Service, where the local Ollama
+// daemon can't run): set VITE_CLOUD_ONLY=1 at build time to hide the Offline
+// toggle and pin the app to online (Claude) mode.
+const CLOUD_ONLY = import.meta.env.VITE_CLOUD_ONLY === "1";
+
 export default function WorkspaceLayout() {
   const {
     user, logout, mode, setMode, setProvider,
@@ -35,6 +40,14 @@ export default function WorkspaceLayout() {
 
   useEffect(() => {
     systemApi.status().then((r) => setNetworkStatus(r.data)).catch(() => {});
+  }, []);
+
+  // In a cloud-only build, force online mode on load — offline can't work here.
+  useEffect(() => {
+    if (CLOUD_ONLY && mode !== "cloud") {
+      setMode("cloud");
+      setProvider("groq");
+    }
   }, []);
 
   async function switchMode(next: LLMMode) {
@@ -90,82 +103,106 @@ export default function WorkspaceLayout() {
     if (offline && activeTab === "papers") navigate("/app");
   }, [offline, activeTab]);
 
+  const activeTitle =
+    activeTab === "guide" ? "Research guide"
+    : activeTab === "viva" ? "Viva preparation"
+    : activeTab === "papers" ? "Paper finder"
+    : activeTab === "agents" ? "Agent network"
+    : "Ask";
+
   return (
-    <div className="h-[100dvh] flex flex-col bg-canvas">
-      <header className="flex items-center gap-6 px-6 h-14 bg-white border-b border-zinc-200/60 flex-shrink-0">
-        <Link to="/app" className="flex items-center gap-2 flex-shrink-0">
-          <span className="w-6 h-6 rounded-lg bg-brand-600 flex items-center justify-center">
-            <svg viewBox="0 0 32 32" className="w-3.5 h-3.5" fill="none">
+    <div className="h-[100dvh] flex bg-canvas">
+      {/* ───────────────────────── Left sidebar ───────────────────────── */}
+      <aside className="w-60 flex-shrink-0 flex flex-col bg-white border-r border-zinc-200/70">
+        {/* Brand */}
+        <Link to="/app" className="flex items-center gap-2.5 h-14 px-5 border-b border-zinc-200/60 flex-shrink-0">
+          <span className="w-7 h-7 rounded-lg bg-brand-600 flex items-center justify-center shadow-sm">
+            <svg viewBox="0 0 32 32" className="w-4 h-4" fill="none">
               <path d="M9 17l5 5 9-11" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </span>
-          <span className="font-semibold tracking-tight text-zinc-900">VeritasRAG</span>
+          <span className="flex flex-col leading-none">
+            <span className="font-semibold tracking-tight text-zinc-900">VeritasRAG</span>
+            <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400 mt-0.5">Agentic RAG</span>
+          </span>
         </Link>
 
-        <nav className="flex items-center gap-1">
-          {TABS.map(({ to, label, Icon, end }) => {
-            // Paper search hits Semantic Scholar/arXiv — meaningless offline.
-            if (offline && to === "/app/papers") {
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto px-3 py-4">
+          <p className="px-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Workspace</p>
+          <div className="space-y-1">
+            {TABS.map(({ to, label, Icon, end }) => {
+              // Paper search hits Semantic Scholar/arXiv — meaningless offline.
+              if (offline && to === "/app/papers") {
+                return (
+                  <span
+                    key={to}
+                    title="Paper search needs the internet — switch to Online mode to use it"
+                    onClick={() => toast("Paper search needs the internet. Switch to Online mode first.")}
+                    className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-zinc-300 cursor-not-allowed select-none"
+                  >
+                    <Icon className="w-4 h-4" strokeWidth={2} />
+                    {label}
+                  </span>
+                );
+              }
               return (
-                <span
+                <NavLink
                   key={to}
-                  title="Paper search needs the internet — switch to Online mode to use it"
-                  onClick={() => toast("Paper search needs the internet. Switch to Online mode first.")}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-zinc-300 cursor-not-allowed select-none"
+                  to={to}
+                  end={end}
+                  className={({ isActive }) =>
+                    `relative flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      isActive
+                        ? "bg-brand-50 text-brand-700"
+                        : "text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50"
+                    }`
+                  }
                 >
-                  <Icon className="w-3.5 h-3.5" strokeWidth={2} />
-                  {label}
-                </span>
+                  {({ isActive }) => (
+                    <>
+                      {isActive && (
+                        <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 rounded-full bg-brand-600" />
+                      )}
+                      <Icon className="w-4 h-4" strokeWidth={2} />
+                      {label}
+                    </>
+                  )}
+                </NavLink>
               );
-            }
-            return (
-              <NavLink
-                key={to}
-                to={to}
-                end={end}
-                className={({ isActive }) =>
-                  `flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                    isActive
-                      ? "bg-brand-50 text-brand-700"
-                      : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
-                  }`
-                }
-              >
-                <Icon className="w-3.5 h-3.5" strokeWidth={2} />
-                {label}
-              </NavLink>
-            );
-          })}
+            })}
+          </div>
         </nav>
 
-        <div className="flex items-center gap-3 ml-auto">
-          {/* Online / Offline segmented toggle */}
-          <div className="flex items-center bg-zinc-100 rounded-xl p-0.5" role="group" aria-label="Model mode">
-            <button
-              onClick={() => switchMode("cloud")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-medium transition-all active:scale-[0.98] ${
-                !offline ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
-              }`}
-              title="Anthropic Claude (cloud). Question and retrieved passages leave this device."
-            >
-              <Cloud className="w-3.5 h-3.5" strokeWidth={2} />
-              Online
-            </button>
-            <button
-              onClick={() => switchMode("local")}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-medium transition-all active:scale-[0.98] ${
-                offline ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
-              }`}
-              title="Ollama local model (phi4-mini). Nothing leaves this device."
-            >
-              <HardDrive className="w-3.5 h-3.5" strokeWidth={2} />
-              Offline
-            </button>
-          </div>
+        {/* Sidebar footer: model mode + status */}
+        <div className="border-t border-zinc-200/60 p-3 space-y-2.5 flex-shrink-0">
+          {!CLOUD_ONLY && (
+            <div className="flex items-center bg-zinc-100 rounded-xl p-0.5" role="group" aria-label="Model mode">
+              <button
+                onClick={() => switchMode("cloud")}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-[10px] text-xs font-medium transition-all active:scale-[0.98] ${
+                  !offline ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                }`}
+                title="Anthropic Claude (cloud). Question and retrieved passages leave this device."
+              >
+                <Cloud className="w-3.5 h-3.5" strokeWidth={2} />
+                Online
+              </button>
+              <button
+                onClick={() => switchMode("local")}
+                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-[10px] text-xs font-medium transition-all active:scale-[0.98] ${
+                  offline ? "bg-white text-zinc-900 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                }`}
+                title="Ollama local model (phi4-mini). Nothing leaves this device."
+              >
+                <HardDrive className="w-3.5 h-3.5" strokeWidth={2} />
+                Offline
+              </button>
+            </div>
+          )}
 
-          {/* Privacy indicator */}
           <span
-            className={`hidden md:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${
+            className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1.5 rounded-lg border ${
               offline
                 ? ollamaUp
                   ? "bg-emerald-50 border-emerald-200 text-emerald-700"
@@ -180,42 +217,53 @@ export default function WorkspaceLayout() {
             />
             {offline ? (ollamaUp ? "Private — on-device" : "Ollama offline") : "Cloud — Claude"}
           </span>
+        </div>
+      </aside>
 
-          <button
-            onClick={() => setSettingsOpen(true)}
-            className="p-2 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-            title="Settings"
-            aria-label="Settings"
-          >
-            <Settings className="w-4 h-4" strokeWidth={2} />
-          </button>
+      {/* ───────────────────────── Content column ───────────────────────── */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Top bar: page title + account controls */}
+        <header className="flex items-center gap-4 px-6 h-14 bg-white border-b border-zinc-200/60 flex-shrink-0">
+          <h1 className="text-sm font-semibold text-zinc-900">{activeTitle}</h1>
 
-          <div className="flex items-center gap-2 pl-3 border-l border-zinc-200">
-            <span className="w-7 h-7 rounded-lg bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-semibold uppercase">
-              {user?.name?.slice(0, 1) ?? "?"}
-            </span>
-            <span className="hidden lg:block text-sm text-zinc-600">{user?.name}</span>
+          <div className="flex items-center gap-2 ml-auto">
             <button
-              onClick={handleLogout}
-              className="p-2 rounded-lg text-zinc-500 hover:text-red-600 hover:bg-red-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
-              title="Sign out"
-              aria-label="Sign out"
+              onClick={() => setSettingsOpen(true)}
+              className="p-2 rounded-lg text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+              title="Settings"
+              aria-label="Settings"
             >
-              <LogOut className="w-4 h-4" strokeWidth={2} />
+              <Settings className="w-4 h-4" strokeWidth={2} />
             </button>
-          </div>
-        </div>
-      </header>
 
-      <div className="flex-1 min-h-0 flex">
-        <div className="flex-1 min-w-0 h-full">
-          <div className={activeTab === "ask" ? "h-full" : "hidden"}><AskPage /></div>
-          <div className={activeTab === "guide" ? "h-full" : "hidden"}><ResearchGuidePage /></div>
-          <div className={activeTab === "viva" ? "h-full" : "hidden"}><VivaPage /></div>
-          <div className={activeTab === "papers" ? "h-full" : "hidden"}><PaperFinderPage /></div>
-          <div className={activeTab === "agents" ? "h-full" : "hidden"}><AgentNetworkPage /></div>
+            <div className="flex items-center gap-2 pl-3 border-l border-zinc-200">
+              <span className="w-7 h-7 rounded-lg bg-brand-100 text-brand-700 flex items-center justify-center text-xs font-semibold uppercase">
+                {user?.name?.slice(0, 1) ?? "?"}
+              </span>
+              <span className="hidden lg:block text-sm text-zinc-600">{user?.name}</span>
+              <button
+                onClick={handleLogout}
+                className="p-2 rounded-lg text-zinc-500 hover:text-red-600 hover:bg-red-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
+                title="Sign out"
+                aria-label="Sign out"
+              >
+                <LogOut className="w-4 h-4" strokeWidth={2} />
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {/* Main content */}
+        <div className="flex-1 min-h-0 flex">
+          <div className="flex-1 min-w-0 h-full">
+            <div className={activeTab === "ask" ? "h-full" : "hidden"}><AskPage /></div>
+            <div className={activeTab === "guide" ? "h-full" : "hidden"}><ResearchGuidePage /></div>
+            <div className={activeTab === "viva" ? "h-full" : "hidden"}><VivaPage /></div>
+            <div className={activeTab === "papers" ? "h-full" : "hidden"}><PaperFinderPage /></div>
+            <div className={activeTab === "agents" ? "h-full" : "hidden"}><AgentNetworkPage /></div>
+          </div>
+          <PdfViewerPanel />
         </div>
-        <PdfViewerPanel />
       </div>
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />

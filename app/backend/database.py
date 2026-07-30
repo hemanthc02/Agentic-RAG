@@ -25,13 +25,84 @@ import config
 DB_PATH: Path = config.DATA_DIR / "app.db"
 
 
+def _use_azure() -> bool:
+    return config.DB_BACKEND == "azure_sql"
+
+
+# --------------------------------------------------------------------------- #
+# Azure SQL (pyodbc) — a thin wrapper so the rest of this module can keep using
+# ``conn.execute(sql, params)`` and rows that behave like sqlite3.Row (both
+# ``dict(row)`` and ``row["col"]`` work). pyodbc is imported lazily so the app
+# runs with no ODBC packages installed while DB_BACKEND stays "sqlite".
+# --------------------------------------------------------------------------- #
+
+class _AzureRow(dict):
+    """dict subclass: supports dict(row), row["col"], and row.pop(...)."""
+
+
+class _AzureResult:
+    def __init__(self, cursor) -> None:
+        self._cursor = cursor
+        self.rowcount = cursor.rowcount
+
+    def _cols(self) -> list[str]:
+        return [c[0] for c in self._cursor.description]
+
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        if row is None:
+            return None
+        return _AzureRow(zip(self._cols(), row))
+
+    def fetchall(self):
+        rows = self._cursor.fetchall()
+        if not rows:
+            return []
+        cols = self._cols()
+        return [_AzureRow(zip(cols, r)) for r in rows]
+
+
+class _AzureConn:
+    def __init__(self, raw) -> None:
+        self._raw = raw
+
+    def execute(self, sql: str, params: tuple = ()):
+        cur = self._raw.cursor()
+        if params:
+            cur.execute(sql, tuple(params))
+        else:
+            cur.execute(sql)
+        return _AzureResult(cur)
+
+    def commit(self):
+        self._raw.commit()
+
+    def rollback(self):
+        self._raw.rollback()
+
+    def close(self):
+        self._raw.close()
+
+
+def _azure_connect() -> _AzureConn:
+    import pyodbc  # lazy
+
+    if not config.AZURE_SQL_CONNECTION_STRING:
+        raise RuntimeError("DB_BACKEND=azure_sql but AZURE_SQL_CONNECTION_STRING is not set")
+    raw = pyodbc.connect(config.AZURE_SQL_CONNECTION_STRING, autocommit=False)
+    return _AzureConn(raw)
+
+
 @contextmanager
 def get_conn():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    if _use_azure():
+        conn = _azure_connect()
+    else:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
     try:
         yield conn
         conn.commit()
@@ -42,7 +113,98 @@ def get_conn():
         conn.close()
 
 
+# --------------------------------------------------------------------------- #
+# Azure SQL schema (T-SQL). Same tables as the SQLite schema below, with
+# SQL-Server types and idempotent IF-NOT-EXISTS guards. KG edge FKs are dropped
+# (the KG is unused, and dual cascade paths to one table are illegal in SQL
+# Server); purge_corpus_data() handles their cleanup explicitly.
+# --------------------------------------------------------------------------- #
+_AZURE_DDL: list[str] = [
+    """IF OBJECT_ID(N'dbo.users', N'U') IS NULL CREATE TABLE dbo.users (
+        id NVARCHAR(64) PRIMARY KEY, email NVARCHAR(320) UNIQUE NOT NULL,
+        name NVARCHAR(256) NOT NULL, password_hash NVARCHAR(256) NOT NULL,
+        created_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.corpora', N'U') IS NULL CREATE TABLE dbo.corpora (
+        id NVARCHAR(64) PRIMARY KEY,
+        user_id NVARCHAR(64) NOT NULL REFERENCES dbo.users(id) ON DELETE CASCADE,
+        name NVARCHAR(400) NOT NULL, doc_count INT DEFAULT 0,
+        chunk_count INT DEFAULT 0, created_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.documents', N'U') IS NULL CREATE TABLE dbo.documents (
+        id NVARCHAR(64) PRIMARY KEY,
+        corpus_id NVARCHAR(64) NOT NULL REFERENCES dbo.corpora(id) ON DELETE CASCADE,
+        user_id NVARCHAR(64) NOT NULL, filename NVARCHAR(400) NOT NULL,
+        original_name NVARCHAR(400) NOT NULL, page_count INT DEFAULT 0,
+        chunk_count INT DEFAULT 0, file_size INT DEFAULT 0,
+        indexed_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.queries', N'U') IS NULL CREATE TABLE dbo.queries (
+        id NVARCHAR(64) PRIMARY KEY, user_id NVARCHAR(64) NOT NULL,
+        corpus_id NVARCHAR(64) NULL, question NVARCHAR(MAX) NOT NULL,
+        answer NVARCHAR(MAX) DEFAULT '', mode NVARCHAR(20) DEFAULT 'cloud',
+        provider NVARCHAR(40) DEFAULT 'groq', latency_ms INT DEFAULT 0,
+        overall_faithfulness FLOAT DEFAULT 0,
+        sub_questions_json NVARCHAR(MAX) DEFAULT '[]',
+        claims_json NVARCHAR(MAX) DEFAULT '[]',
+        stage_log_json NVARCHAR(MAX) DEFAULT '[]', is_cached INT DEFAULT 0,
+        created_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.query_cache', N'U') IS NULL CREATE TABLE dbo.query_cache (
+        cache_key NVARCHAR(200) PRIMARY KEY, response_json NVARCHAR(MAX) NOT NULL,
+        created_at NVARCHAR(40) NOT NULL, expires_at NVARCHAR(40) NOT NULL,
+        hit_count INT DEFAULT 0)""",
+    """IF OBJECT_ID(N'dbo.embedding_cache', N'U') IS NULL CREATE TABLE dbo.embedding_cache (
+        text_hash NVARCHAR(80) PRIMARY KEY, embedding_blob VARBINARY(MAX) NOT NULL,
+        created_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.conversations', N'U') IS NULL CREATE TABLE dbo.conversations (
+        id NVARCHAR(64) PRIMARY KEY,
+        user_id NVARCHAR(64) NOT NULL REFERENCES dbo.users(id) ON DELETE CASCADE,
+        corpus_id NVARCHAR(64) NULL,
+        title NVARCHAR(400) NOT NULL DEFAULT 'New conversation',
+        mode NVARCHAR(20) NOT NULL DEFAULT 'rag', created_at NVARCHAR(40) NOT NULL,
+        updated_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.messages', N'U') IS NULL CREATE TABLE dbo.messages (
+        id NVARCHAR(64) PRIMARY KEY,
+        conversation_id NVARCHAR(64) NOT NULL REFERENCES dbo.conversations(id) ON DELETE CASCADE,
+        role NVARCHAR(20) NOT NULL, content NVARCHAR(MAX) NOT NULL,
+        query_id NVARCHAR(64) NULL, metadata_json NVARCHAR(MAX) DEFAULT '{}',
+        created_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.user_settings', N'U') IS NULL CREATE TABLE dbo.user_settings (
+        user_id NVARCHAR(64) PRIMARY KEY REFERENCES dbo.users(id) ON DELETE CASCADE,
+        llm_mode NVARCHAR(20) NOT NULL DEFAULT 'cloud',
+        provider NVARCHAR(40) NOT NULL DEFAULT 'groq',
+        ollama_host NVARCHAR(200) NOT NULL DEFAULT 'http://localhost',
+        ollama_port INT NOT NULL DEFAULT 11434,
+        ollama_model NVARCHAR(80) NOT NULL DEFAULT 'phi4-mini',
+        groq_model NVARCHAR(80) NOT NULL DEFAULT 'llama-3.3-70b-versatile',
+        groq_api_key NVARCHAR(200) DEFAULT '', updated_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.knowledge_graph_nodes', N'U') IS NULL CREATE TABLE dbo.knowledge_graph_nodes (
+        id NVARCHAR(64) PRIMARY KEY, corpus_id NVARCHAR(64) NOT NULL,
+        entity NVARCHAR(400) NOT NULL, entity_type NVARCHAR(80) NOT NULL,
+        description NVARCHAR(MAX) DEFAULT '', source_chunk_id NVARCHAR(80) DEFAULT '',
+        created_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.knowledge_graph_edges', N'U') IS NULL CREATE TABLE dbo.knowledge_graph_edges (
+        id NVARCHAR(64) PRIMARY KEY, corpus_id NVARCHAR(64) NOT NULL,
+        source_id NVARCHAR(64) NOT NULL, target_id NVARCHAR(64) NOT NULL,
+        relation NVARCHAR(200) NOT NULL, source_chunk_id NVARCHAR(80) DEFAULT '',
+        created_at NVARCHAR(40) NOT NULL)""",
+    """IF OBJECT_ID(N'dbo.viva_sessions', N'U') IS NULL CREATE TABLE dbo.viva_sessions (
+        id NVARCHAR(64) PRIMARY KEY,
+        user_id NVARCHAR(64) NOT NULL REFERENCES dbo.users(id) ON DELETE CASCADE,
+        corpus_id NVARCHAR(64) NOT NULL,
+        difficulty NVARCHAR(40) NOT NULL DEFAULT 'masters',
+        questions_json NVARCHAR(MAX) DEFAULT '[]', answers_json NVARCHAR(MAX) DEFAULT '[]',
+        scores_json NVARCHAR(MAX) DEFAULT '[]', completed INT DEFAULT 0,
+        created_at NVARCHAR(40) NOT NULL, updated_at NVARCHAR(40) NOT NULL)""",
+    "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='idx_conversations_user' AND object_id=OBJECT_ID('dbo.conversations')) CREATE INDEX idx_conversations_user ON dbo.conversations(user_id)",
+    "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='idx_messages_conv' AND object_id=OBJECT_ID('dbo.messages')) CREATE INDEX idx_messages_conv ON dbo.messages(conversation_id)",
+    "IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name='idx_viva_user' AND object_id=OBJECT_ID('dbo.viva_sessions')) CREATE INDEX idx_viva_user ON dbo.viva_sessions(user_id)",
+]
+
+
 def init_db() -> None:
+    if _use_azure():
+        with get_conn() as conn:
+            for stmt in _AZURE_DDL:
+                conn.execute(stmt)
+        return
     with get_conn() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS users (
@@ -350,10 +512,10 @@ def save_query(user_id: str, corpus_id: str | None, question: str, answer: str,
 def list_queries(user_id: str, limit: int = 20) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM queries WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
-            (user_id, limit),
+            "SELECT * FROM queries WHERE user_id=? ORDER BY created_at DESC",
+            (user_id,),
         ).fetchall()
-        return [_expand_query_row(dict(r)) for r in rows]
+        return [_expand_query_row(dict(r)) for r in rows[:limit]]
 
 
 def _expand_query_row(d: dict) -> dict:
@@ -384,8 +546,10 @@ def get_cached_response(cache_key: str) -> dict | None:
 def set_cached_response(cache_key: str, response: dict, ttl_hours: int = 24) -> None:
     expires = (datetime.utcnow() + timedelta(hours=ttl_hours)).isoformat()
     with get_conn() as conn:
+        # Portable upsert (works on both SQLite and Azure SQL): delete then insert.
+        conn.execute("DELETE FROM query_cache WHERE cache_key=?", (cache_key,))
         conn.execute(
-            "INSERT OR REPLACE INTO query_cache (cache_key,response_json,created_at,expires_at,hit_count)"
+            "INSERT INTO query_cache (cache_key,response_json,created_at,expires_at,hit_count)"
             " VALUES (?,?,?,?,0)",
             (cache_key, json.dumps(response, default=str), _now(), expires),
         )
@@ -421,10 +585,10 @@ def create_conversation(user_id: str, corpus_id: str | None, title: str, mode: s
 def list_conversations(user_id: str, limit: int = 50) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM conversations WHERE user_id=? ORDER BY updated_at DESC LIMIT ?",
-            (user_id, limit),
+            "SELECT * FROM conversations WHERE user_id=? ORDER BY updated_at DESC",
+            (user_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in rows[:limit]]
 
 
 def get_conversation(conv_id: str, user_id: str) -> dict | None:
@@ -515,18 +679,27 @@ def save_user_settings(user_id: str, llm_mode: str, provider: str,
                        groq_model: str, groq_api_key: str) -> dict:
     now = _now()
     with get_conn() as conn:
-        conn.execute(
-            """INSERT INTO user_settings
-               (user_id,llm_mode,provider,ollama_host,ollama_port,ollama_model,groq_model,groq_api_key,updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                 llm_mode=excluded.llm_mode, provider=excluded.provider,
-                 ollama_host=excluded.ollama_host, ollama_port=excluded.ollama_port,
-                 ollama_model=excluded.ollama_model, groq_model=excluded.groq_model,
-                 groq_api_key=excluded.groq_api_key, updated_at=excluded.updated_at""",
-            (user_id, llm_mode, provider, ollama_host, ollama_port,
-             ollama_model, groq_model, groq_api_key, now),
-        )
+        # Portable upsert (SQLite + Azure SQL): update if the row exists, else insert.
+        exists = conn.execute(
+            "SELECT 1 FROM user_settings WHERE user_id=?", (user_id,)
+        ).fetchone()
+        if exists:
+            conn.execute(
+                """UPDATE user_settings SET
+                     llm_mode=?, provider=?, ollama_host=?, ollama_port=?,
+                     ollama_model=?, groq_model=?, groq_api_key=?, updated_at=?
+                   WHERE user_id=?""",
+                (llm_mode, provider, ollama_host, ollama_port,
+                 ollama_model, groq_model, groq_api_key, now, user_id),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO user_settings
+                   (user_id,llm_mode,provider,ollama_host,ollama_port,ollama_model,groq_model,groq_api_key,updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (user_id, llm_mode, provider, ollama_host, ollama_port,
+                 ollama_model, groq_model, groq_api_key, now),
+            )
     return get_user_settings(user_id)
 
 
@@ -626,10 +799,10 @@ def get_viva_session(session_id: str, user_id: str) -> dict | None:
 def list_viva_sessions(user_id: str, limit: int = 20) -> list[dict]:
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM viva_sessions WHERE user_id=? ORDER BY created_at DESC LIMIT ?",
-            (user_id, limit),
+            "SELECT * FROM viva_sessions WHERE user_id=? ORDER BY created_at DESC",
+            (user_id,),
         ).fetchall()
-        return [_expand_viva(dict(r)) for r in rows]
+        return [_expand_viva(dict(r)) for r in rows[:limit]]
 
 
 def update_viva_session(session_id: str, user_id: str,

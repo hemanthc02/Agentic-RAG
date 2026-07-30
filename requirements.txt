@@ -43,5 +43,11 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9  # PDF upload support
 
+# --- Azure managed services (only needed when the matching *_BACKEND is set to
+#     azure; safe to install everywhere — imports are lazy) ---
+azure-storage-blob>=12.19.0   # STORAGE_BACKEND=azure_blob
+azure-search-documents>=11.4.0 # SEARCH_BACKEND=azure_search (vector search)
+pyodbc>=5.1.0                  # DB_BACKEND=azure_sql (needs an ODBC SQL driver)
+
 # --- Dev / tooling ---
 pytest>=8.0.0

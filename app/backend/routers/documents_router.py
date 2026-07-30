@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
-import shutil
 import uuid
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 import config
 from app.backend import auth, cache as cache_mod
 from app.backend import database as db
+from app.backend import storage
 from app.backend.security.guardrails import (
     sanitize_chunk_text, sanitize_filename, validate_pdf_magic_bytes,
 )
+from src import search_backend
 
 router = APIRouter(prefix="/api", tags=["documents"])
 
@@ -50,13 +51,9 @@ def delete_corpus(corpus_id: str,
     corpus = db.get_corpus(corpus_id, user["id"])
     if not corpus:
         raise HTTPException(404, "Corpus not found")
-    # Remove the FAISS index directory AND the uploaded PDFs on disk.
-    idx_dir = config.DATA_DIR / "corpora" / corpus_id
-    if idx_dir.exists():
-        shutil.rmtree(idx_dir, ignore_errors=True)
-    pdf_dir = config.PDF_DIR / corpus_id
-    if pdf_dir.exists():
-        shutil.rmtree(pdf_dir, ignore_errors=True)
+    # Remove the vector index AND the uploaded PDFs (local disk or Azure).
+    search_backend.index_drop(corpus_id)
+    storage.delete_corpus_pdfs(corpus_id)
     # Cascade the DB rows, then purge the non-cascading corpus-keyed tables
     # (KG, query history, viva sessions) so nothing is left behind.
     db.delete_corpus(corpus_id, user["id"])
@@ -92,6 +89,12 @@ def get_pdf_file(
     if not db.get_corpus(corpus_id, user["id"]):
         raise HTTPException(404, "Corpus not found")
     safe = Path(name).name  # strip any path components
+    if config.STORAGE_BACKEND == "azure_blob":
+        data = storage.read_pdf(corpus_id, safe)
+        if data is None:
+            raise HTTPException(404, "PDF not found")
+        return Response(content=data, media_type="application/pdf",
+                        headers={"Content-Disposition": f'inline; filename="{safe}"'})
     path = config.PDF_DIR / corpus_id / safe
     if not path.is_file():
         raise HTTPException(404, "PDF not found")
@@ -169,37 +172,23 @@ async def upload_pdfs(
             chunk_count=len(chunks), file_size=file_size,
         )
         db.update_corpus_counts(corpus_id, doc_delta=1, chunk_delta=len(chunks))
+        # Persist the PDF to its permanent home. Local mode already wrote it to
+        # PDF_DIR (that IS the store); Azure mode uploads to Blob and drops the
+        # temp working file.
+        if config.STORAGE_BACKEND == "azure_blob":
+            storage.save_pdf(corpus_id, safe_name, dest.read_bytes())
+            dest.unlink(missing_ok=True)
         results.append({**doc, "original_name": upload.filename, "chunk_count": len(chunks)})
 
-    # Rebuild the corpus-level FAISS index incrementally (embedding is CPU-heavy
-    # — offload so the event loop stays responsive during indexing).
+    # Index the new chunks (FAISS rebuild on disk, or upsert to Azure AI Search).
+    # Embedding is CPU-heavy — offload so the event loop stays responsive.
     if all_new_chunks:
-        await run_in_threadpool(_rebuild_index, corpus_id, all_new_chunks)
+        await run_in_threadpool(search_backend.index_add, corpus_id, all_new_chunks)
         from src.retrieval import drop_cached_store
         drop_cached_store(corpus_id)
         cache_mod.invalidate_corpus(corpus_id)
 
     return {"indexed": results, "total_new_chunks": len(all_new_chunks)}
-
-
-def _rebuild_index(corpus_id: str, new_chunks: list) -> None:
-    """Add new chunks to the corpus FAISS index (rebuild from all chunks)."""
-    idx_path, chunk_path = config.corpus_paths(corpus_id)
-
-    from src.retrieval import VectorStore, get_shared_embedder
-
-    embedder = get_shared_embedder()
-
-    # Load existing chunks if the index already exists, then rebuild from all.
-    existing: list = []
-    if idx_path.exists():
-        existing = VectorStore.load(
-            embedder, index_path=idx_path, chunk_path=chunk_path
-        ).chunks
-
-    store = VectorStore(embedder)
-    store.build(existing + new_chunks)
-    store.save(index_path=idx_path, chunk_path=chunk_path)
 
 
 @router.delete("/corpora/{corpus_id}/documents/{doc_id}", status_code=204)
@@ -208,35 +197,9 @@ def delete_document(corpus_id: str, doc_id: str,
     doc = db.delete_document(doc_id, user["id"])
     if not doc:
         raise HTTPException(404, "Document not found")
-    pdf_path = config.PDF_DIR / corpus_id / doc["filename"]
-    if pdf_path.exists():
-        pdf_path.unlink()
-    # Rebuild the FAISS index WITHOUT this document's chunks. Previously the
-    # index was untouched, so a "deleted" document stayed retrievable and
-    # citable — deletion was cosmetic. chunk.source == document.filename.
-    _remove_document_from_index(corpus_id, doc["filename"])
+    storage.delete_pdf(corpus_id, doc["filename"])
+    # Remove this document's chunks from the index so a "deleted" document is no
+    # longer retrievable or citable. chunk.source == document.filename.
+    search_backend.index_remove_document(corpus_id, doc["filename"])
     db.update_corpus_counts(corpus_id, doc_delta=-1, chunk_delta=-doc.get("chunk_count", 0))
     cache_mod.invalidate_corpus(corpus_id)
-
-
-def _remove_document_from_index(corpus_id: str, filename: str) -> None:
-    """Rebuild the corpus index from the chunks NOT belonging to ``filename``."""
-    idx_path, chunk_path = config.corpus_paths(corpus_id)
-    if not idx_path.exists():
-        return
-    from src.retrieval import VectorStore, get_shared_embedder, drop_cached_store
-
-    embedder = get_shared_embedder()
-    survivors = [
-        c for c in VectorStore.load(embedder, index_path=idx_path, chunk_path=chunk_path).chunks
-        if c.source != filename
-    ]
-    if survivors:
-        store = VectorStore(embedder)
-        store.build(survivors)
-        store.save(index_path=idx_path, chunk_path=chunk_path)
-    else:
-        # No chunks left — remove the index files so an empty corpus reads clean.
-        idx_path.unlink(missing_ok=True)
-        chunk_path.unlink(missing_ok=True)
-    drop_cached_store(corpus_id)

@@ -1,10 +1,14 @@
 # --- Secrets & config ---
 .env
 
-# --- User data: PDFs and built indexes must never be committed (prompt.md §2) ---
+# --- User data: PDFs, DB and built indexes must never be committed (prompt.md §2) ---
 data/pdfs/*
 !data/pdfs/.gitkeep
 data/index/
+data/corpora/
+data/app.db
+data/app.db-wal
+data/app.db-shm
 
 # --- Python ---
 __pycache__/

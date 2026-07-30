@@ -37,7 +37,14 @@ except ImportError:
 # Paths
 # --------------------------------------------------------------------------- #
 PROJECT_ROOT: Path = Path(__file__).resolve().parent
-DATA_DIR: Path = PROJECT_ROOT / "data"
+# Where uploads, the SQLite DB and FAISS indexes are written. Defaults to
+# ``<project>/data`` for local runs. On a host where the app folder is
+# read-only or wiped on redeploy (e.g. Azure App Service, whose ``/home`` is the
+# persistent, writable area), set DATA_DIR=/home/data so user data survives
+# restarts and redeploys. All sub-paths below derive from this.
+_DATA_DIR_ENV = os.getenv("DATA_DIR")
+DATA_DIR: Path = Path(_DATA_DIR_ENV).expanduser() if _DATA_DIR_ENV else PROJECT_ROOT / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 PDF_DIR: Path = DATA_DIR / "pdfs"
 EVAL_DIR: Path = DATA_DIR / "eval"
 EVAL_SET_PATH: Path = EVAL_DIR / "eval_set.json"
@@ -100,6 +107,35 @@ OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "phi4-mini")
 # HTTP timeout per Ollama generate call. CPU prompt processing on long grounded
 # prompts can exceed 120 s on low-RAM machines, so this is deliberately generous.
 OLLAMA_TIMEOUT_S: int = int(os.getenv("OLLAMA_TIMEOUT_S", "480"))
+
+
+# --------------------------------------------------------------------------- #
+# Backend selection — local (default) vs Azure managed services
+# Each is independent and defaults to the local implementation, so the app runs
+# unchanged on a laptop. On Azure, flip the ones you use via environment vars.
+#   STORAGE_BACKEND  "local" (disk)   | "azure_blob"   — where uploaded PDFs live
+#   DB_BACKEND       "sqlite" (file)  | "azure_sql"    — users/corpora/history
+#   SEARCH_BACKEND   "faiss" (file)   | "azure_search" — the vector index
+# --------------------------------------------------------------------------- #
+STORAGE_BACKEND: str = os.getenv("STORAGE_BACKEND", "local").lower()
+DB_BACKEND: str = os.getenv("DB_BACKEND", "sqlite").lower()
+SEARCH_BACKEND: str = os.getenv("SEARCH_BACKEND", "faiss").lower()
+
+# --- Azure Blob Storage (STORAGE_BACKEND=azure_blob) ---
+AZURE_STORAGE_CONNECTION_STRING: str | None = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZURE_BLOB_CONTAINER: str = os.getenv("AZURE_BLOB_CONTAINER", "veritasrag-pdfs")
+
+# --- Azure SQL Database (DB_BACKEND=azure_sql) ---
+# A full ODBC connection string, e.g.
+#   Driver={ODBC Driver 18 for SQL Server};Server=tcp:<srv>.database.windows.net,1433;
+#   Database=<db>;Uid=<user>;Pwd=<pwd>;Encrypt=yes;TrustServerCertificate=no;
+AZURE_SQL_CONNECTION_STRING: str | None = os.getenv("AZURE_SQL_CONNECTION_STRING")
+
+# --- Azure AI Search (SEARCH_BACKEND=azure_search) ---
+# Free tier = 3 indexes / 50 MB, so ONE shared index filtered by corpus_id.
+AZURE_SEARCH_ENDPOINT: str | None = os.getenv("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY: str | None = os.getenv("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX: str = os.getenv("AZURE_SEARCH_INDEX", "veritasrag-chunks")
 
 
 # --------------------------------------------------------------------------- #

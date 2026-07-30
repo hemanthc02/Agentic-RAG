@@ -112,5 +112,14 @@ if _FRONTEND_DIST.is_dir():
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+
+    # Azure App Service (and most PaaS hosts) inject the port to listen on via
+    # the PORT env var and require binding all interfaces. Locally, with no PORT
+    # set, this still serves on 8000. Start on a host with:
+    #     python -m app.backend.main
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
