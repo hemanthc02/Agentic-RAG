@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+import traceback
 from abc import ABC, abstractmethod
 
 import config
@@ -63,6 +64,10 @@ def _with_retry(
                 "LLM call failed (%d/%d): %s; retry in %ss", attempt, attempts, exc, delay
             )
             time.sleep(delay)
+    # Full traceback to the log stream so the exact failing frame is visible
+    # (e.g. which library/line raises the 'ascii' codec error on Azure).
+    logger.error("LLM call FINAL failure after %d attempts:\n%s",
+                 attempts, "".join(traceback.format_exception(type(last), last, last.__traceback__)))
     raise LLMBackendError(f"LLM call failed after {attempts} attempts: {last}") from last
 
 
