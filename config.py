@@ -163,7 +163,13 @@ OFFTOPIC_SCORE_FLOOR: float = float(os.getenv("OFFTOPIC_SCORE_FLOOR", "0.35"))
 # Verifier
 # --------------------------------------------------------------------------- #
 CITATION_FAITHFULNESS_THRESHOLD: float = 0.6
-MAX_VERIFIER_RETRIES: int = 2
+# Revision loop budget. Each revision re-runs synthesis (an LLM call) AND a full
+# NLI verification pass, so on a CPU host (e.g. Azure App Service B2) this is the
+# biggest latency lever. Lower it (e.g. 0 or 1) on slow hosts to stay under the
+# platform request timeout.
+MAX_VERIFIER_RETRIES: int = int(os.getenv("MAX_VERIFIER_RETRIES", "2"))
+# NLI premise windows scored per claim. Fewer windows = faster CPU verification.
+NLI_MAX_WINDOWS: int = int(os.getenv("NLI_MAX_WINDOWS", "6"))
 # Citation repair (when a cited chunk fails, look for a better one) checks at
 # most this many alternative chunks, and stops early once one supports the
 # claim. Bounds CPU-side NLI work so verification stays fast.

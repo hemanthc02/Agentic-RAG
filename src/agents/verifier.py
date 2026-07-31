@@ -95,7 +95,7 @@ def _nli_score(premise: str, hypothesis: str) -> float:
     if nli is None:
         return _llm_faithfulness_score(premise, hypothesis)
     try:
-        windows = _premise_windows(premise)
+        windows = _premise_windows(premise, max_windows=config.NLI_MAX_WINDOWS)
         results = nli(
             [{"text": w, "text_pair": hypothesis} for w in windows],
             truncation=True,
